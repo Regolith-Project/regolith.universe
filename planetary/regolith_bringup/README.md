@@ -12,3 +12,10 @@ those packages rather than in the `regolith` meta-repo.
 - `terrain_only.launch.py` — generates a procedural lunar terrain world for
   the given `seed` (default `42`) via `regolith_terrain_gen` and opens it in
   Gazebo. `ros2 launch regolith_bringup terrain_only.launch.py seed:=42`
+- `teleop_demo.launch.py` — generates terrain, spawns the
+  `regolith_rover_description` rover at the actual local terrain elevation
+  (never a hard-coded height - see PROGRESS.md M2 for why that matters),
+  and bridges `cmd_vel`/`odom`/`imu`/`camera`/`camera_info`/`joint_states`/`tf`
+  between ROS and Gazebo. `ros2 launch regolith_bringup teleop_demo.launch.py
+  seed:=42`, then in another terminal:
+  `ros2 run teleop_twist_keyboard teleop_twist_keyboard`

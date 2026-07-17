@@ -59,3 +59,68 @@ def save_heightmap_png(heightmap: np.ndarray, path: Path) -> None:
     normalized = heightmap / heightmap.max() if heightmap.max() > 0 else heightmap
     as_uint16 = (np.clip(normalized, 0.0, 1.0) * 65535).astype(np.uint16)
     Image.fromarray(as_uint16, mode="I;16").save(path)
+
+
+def build_terrain_collision_boxes_sdf(
+    heightmap: np.ndarray, cfg: TerrainConfig, grid_resolution: int = 24
+) -> str:
+    """Box collision(s) approximating the terrain - <collision> elements to
+    embed in the SAME model/link as the visual <heightmap> (see worldgen.py).
+
+    Both gz-sim's native <heightmap> collision geometry AND generic <mesh>
+    collision geometry are unimplemented for dartsim in this gz-sim 8 /
+    gz-physics 7.8.0 install ("Heightmap/Mesh construction from an SDF has not
+    been implemented yet for dartsim" - visible only at -v 4 debug verbosity;
+    reproduced identically under the bullet and bullet-featherstone engine
+    plugins too, so it's not dartsim-specific or fixable by picking a
+    different engine here). Box primitives are the one geometry type
+    confirmed to work correctly (wheel and chassis collisions already rely
+    on them). This is the pragmatic version of the plan's "static mesh
+    instead of heightmap" fallback, substituting boxes since neither
+    heightmap nor mesh collision works at all.
+
+    Each grid cell's height is the AVERAGE (not a single strided sample) of
+    the full-resolution heightmap over that cell's footprint, which matters:
+    strided sampling preserves sharp single-pixel features (like crater rims)
+    as isolated spikes, producing large steps between adjacent cells that are
+    tall relative to the rover's ~0.09 m wheel radius. Averaging acts as a
+    low-pass filter, trading exact rim sharpness in the collision shape
+    (visual rims stay sharp) for steps small enough to actually drive over.
+
+    Spawn height gotcha (cost a long debugging session, worth recording): a
+    box's height here is the LOCAL average, which can be several meters even
+    near the nominal "origin" spawn point if the regional slope/base terrain
+    happens to sit high there for a given seed. Whatever spawns a dynamic
+    body into this world MUST look up the actual local elevation (see
+    manifest.json's spawn_zone.elevation_m, written by generate.py using the
+    same elevation_lookup this module's build_heightmap returns) rather than
+    assuming spawn height 0 - spawning below/inside solid collision geometry
+    produces erratic, hard-to-diagnose physics (values that look like a
+    frozen body, a body falling through everything, or exploding away to
+    absurd coordinates, depending on exactly how deep the initial overlap is).
+    """
+    n = heightmap.shape[0]
+    block = max(1, (n - 1) // grid_resolution)
+    usable = ((n - 1) // block) * block  # crop to a multiple of block for clean reshaping
+    cropped = heightmap[: usable + 1, : usable + 1]
+    trimmed = cropped[:usable, :usable]
+    rows_blocks, cols_blocks = usable // block, usable // block
+    averaged = trimmed.reshape(rows_blocks, block, cols_blocks, block).mean(axis=(1, 3))
+
+    half_world = cfg.world_size_m / 2.0
+    cell_size_m = cfg.world_size_m * (usable / (n - 1)) / rows_blocks
+    xs = -half_world + (np.arange(cols_blocks) + 0.5) * cell_size_m
+    ys = -half_world + (np.arange(rows_blocks) + 0.5) * cell_size_m
+
+    collisions = []
+    for row in range(rows_blocks):
+        for col in range(cols_blocks):
+            height = max(float(averaged[row, col]), 0.05)  # avoid zero-thickness boxes
+            collisions.append(
+                f'<collision name="terrain_box_{row}_{col}">'
+                f'<pose>{xs[col]:.3f} {ys[row]:.3f} {height/2.0:.4f} 0 0 0</pose>'
+                f"<geometry><box><size>{cell_size_m:.4f} {cell_size_m:.4f} {height:.4f}</size></box></geometry>"
+                f"<surface><friction><ode><mu>1.2</mu><mu2>1.2</mu2></ode></friction></surface>"
+                f"</collision>"
+            )
+    return "\n".join(collisions)

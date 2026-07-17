@@ -59,7 +59,7 @@ _GUI_BLOCK = """    <gui fullscreen="false">
         </gz-gui>
         <play_pause>true</play_pause>
         <step>true</step>
-        <start_paused>true</start_paused>
+        <start_paused>{start_paused}</start_paused>
       </plugin>
       <plugin filename="WorldStats" name="World stats">
         <gz-gui>
@@ -136,6 +136,8 @@ def build_world_sdf(
     texture_pngs: dict,
     rocks: list,
     rock_mesh_dir: Path,
+    terrain_collision_sdf: str,
+    start_paused: bool = True,
 ) -> str:
     dx, dy, dz = _sun_direction(cfg.sun_elevation_deg, cfg.sun_azimuth_deg)
     # Elevated oblique viewpoint well outside the crater field, looking down across it
@@ -182,15 +184,12 @@ def build_world_sdf(
     <model name="moon_terrain">
       <static>true</static>
       <link name="terrain_link">
-        <collision name="terrain_collision">
-          <geometry>
-            <heightmap>
-              <uri>file://{heightmap_png}</uri>
-              <size>{cfg.world_size_m} {cfg.world_size_m} {cfg.height_range_m}</size>
-              <pos>0 0 0</pos>
-            </heightmap>
-          </geometry>
-        </collision>
+        <!-- Collision is a box grid approximating the terrain, not the <heightmap>
+             geometry type used for the visual below: both <heightmap> and <mesh>
+             collision construction from SDF are unimplemented for dartsim/bullet/
+             bullet-featherstone in this gz-physics 7.8.0 install (verified
+             empirically across all three engines - see heightmap.py). -->
+{terrain_collision_sdf}
         <visual name="terrain_visual">
           <geometry>
             <heightmap>
@@ -209,7 +208,7 @@ def build_world_sdf(
     </model>
 
 {rock_models}
-{_GUI_BLOCK.format(camera_pose=camera_pose)}
+{_GUI_BLOCK.format(camera_pose=camera_pose, start_paused=str(start_paused).lower())}
   </world>
 </sdf>
 """
@@ -222,6 +221,7 @@ def write_manifest(
     rocks: list,
     heightmap_png: Path,
     world_sdf: Path,
+    spawn_elevation_m: float,
 ) -> None:
     manifest = {
         "seed": cfg.seed,
@@ -234,6 +234,7 @@ def write_manifest(
             "x_m": cfg.spawn_zone_center[0],
             "y_m": cfg.spawn_zone_center[1],
             "radius_m": cfg.spawn_zone_radius_m,
+            "elevation_m": spawn_elevation_m,
         },
         "craters": [
             {
