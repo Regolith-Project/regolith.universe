@@ -98,6 +98,16 @@ def build_terrain_collision_boxes_sdf(
     produces erratic, hard-to-diagnose physics (values that look like a
     frozen body, a body falling through everything, or exploding away to
     absurd coordinates, depending on exactly how deep the initial overlap is).
+
+    Resolution is a genuine stability/performance trade-off (see PROGRESS.md
+    M4): coarser grids (e.g. 24) have taller steps at cell boundaries, which
+    can flip the rover when crossing one during autonomous driving; finer
+    grids (e.g. 64, 4096 total boxes) smooth that out but tank the physics
+    step rate badly in this environment (real-time factor dropped to ~0.09,
+    vs. ~0.5-0.6 at 24) - all those boxes live in one link now (see the
+    module-level note above), so it's not the "many collisions -> freeze"
+    issue from M2, just the raw cost of that many collision shapes. 32 is a
+    middle-ground default, not a fully validated sweet spot.
     """
     n = heightmap.shape[0]
     block = max(1, (n - 1) // grid_resolution)

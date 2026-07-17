@@ -19,3 +19,13 @@ those packages rather than in the `regolith` meta-repo.
   between ROS and Gazebo. `ros2 launch regolith_bringup teleop_demo.launch.py
   seed:=42`, then in another terminal:
   `ros2 run teleop_twist_keyboard teleop_twist_keyboard`
+- `localization_demo.launch.py` — everything `teleop_demo` does, plus fuses
+  wheel odometry + IMU into an estimated pose (`robot_localization`'s
+  `ekf_node`) and bridges Gazebo's ground truth separately for comparison
+  (`/ground_truth/pose`, never fed into the estimator). See PROGRESS.md M3.
+- `autonomous_demo.launch.py` — everything `localization_demo` does, plus
+  `regolith_costmap` + `regolith_planner` + `regolith_vehicle_interface`:
+  click "2D Goal Pose" in RViz and the rover plans and drives there. See
+  PROGRESS.md M4 for the current state (pipeline works end-to-end at
+  shorter range; full-distance runs hit an unresolved terrain-collision
+  stability issue).
