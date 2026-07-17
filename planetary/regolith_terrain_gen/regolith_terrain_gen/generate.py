@@ -1,0 +1,37 @@
+# Copyright 2026 Regolith Project contributors
+# SPDX-License-Identifier: Apache-2.0
+"""Top-level orchestration: seed -> heightmap + textures + rocks + world SDF + manifest."""
+
+from pathlib import Path
+
+import numpy as np
+
+from regolith_terrain_gen.config import TerrainConfig
+from regolith_terrain_gen.heightmap import build_heightmap, save_heightmap_png
+from regolith_terrain_gen.rocks import generate_rock_variants
+from regolith_terrain_gen.scatter import scatter_rocks
+from regolith_terrain_gen.textures import generate_textures
+from regolith_terrain_gen.worldgen import build_world_sdf, write_manifest
+
+
+def generate_world(cfg: TerrainConfig, output_dir: Path) -> Path:
+    """Generates all world assets under output_dir and returns the path to world.sdf."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    rng = np.random.default_rng(cfg.seed)
+
+    heightmap, craters, elevation_lookup = build_heightmap(cfg, rng)
+    heightmap_png = output_dir / "heightmap.png"
+    save_heightmap_png(heightmap, heightmap_png)
+
+    texture_pngs = generate_textures(output_dir / "textures", cfg.texture_resolution_px, rng)
+
+    rock_mesh_dir = output_dir / "rocks"
+    variant_names = generate_rock_variants(rock_mesh_dir, cfg.rock_variant_count, rng, cfg.rock_subdivisions)
+    rocks = scatter_rocks(cfg, rng, variant_names, elevation_lookup)
+
+    world_sdf_path = output_dir / "world.sdf"
+    world_sdf_path.write_text(build_world_sdf(cfg, heightmap_png, texture_pngs, rocks, rock_mesh_dir))
+
+    write_manifest(output_dir / "manifest.json", cfg, craters, rocks, heightmap_png, world_sdf_path)
+
+    return world_sdf_path

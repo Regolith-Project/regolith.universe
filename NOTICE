@@ -12,3 +12,10 @@ Copyright 2022 AutoCore Technology (Nanjing) Co., Ltd.
 
 This product includes code developed by Leo Drive.
 Copyright 2022 Leo Drive Teknoloji A.Ş.
+
+---
+
+Regolith is derived from Autoware (Autoware Foundation, Apache-2.0),
+adapted for GPS-denied rough-terrain planetary rover autonomy. New
+packages under planetary/ are:
+Copyright 2026 Regolith Project contributors
