@@ -1,0 +1,58 @@
+# Copyright 2026 Regolith Project contributors
+# SPDX-License-Identifier: Apache-2.0
+#
+# robot_localization EKF fusing wheel odometry + IMU only (no visual odometry -
+# see docs/architecture.md's "Hello-World PoC Scope" for why). 2D mode: the
+# rover's roll/pitch over rough terrain is real but not fused here for this
+# PoC: chosen to keep this milestone's estimator small and well-understood
+# with only two sensor sources, at the cost of not tracking attitude on
+# slopes. Revisit if/when a 3D-aware estimate is actually needed downstream.
+
+ekf_filter_node:
+  ros__parameters:
+    frequency: 30.0
+    sensor_timeout: 0.2
+    two_d_mode: true
+    publish_tf: true
+    map_frame: map
+    odom_frame: odom
+    base_link_frame: base_link
+    world_frame: odom
+    use_sim_time: true
+
+    # Wheel odometry (DiffDrive dead-reckoning, bridged from Gazebo): velocity only,
+    # NOT position or absolute yaw. Skid-steer turning requires real wheel scrub
+    # against the ground, which the dead-reckoning kinematic model doesn't account
+    # for - its yaw drifts hugely under turning (measured ~3x off from ground truth
+    # after a deliberate in-place-rotation test, see PROGRESS.md M3), and since its
+    # own x/y integration already used that same bad internal yaw, the *position*
+    # output is just as corrupted as the yaw - feeding position in doesn't help even
+    # with yaw fusion disabled. Only vx/vyaw (rate measurements, not integrated
+    # against the bad yaw) go in here; the EKF integrates position itself using its
+    # own state, with absolute heading coming from the IMU instead.
+    # /odom/with_covariance, not /odom directly - see sensor_covariance_relay.py.
+    odom0: /odom/with_covariance
+    odom0_config: [false, false, false,
+                   false, false, false,
+                   true,  false, false,
+                   false, false, true,
+                   false, false, false]
+    odom0_differential: false
+    odom0_relative: false
+    odom0_queue_size: 10
+
+    # IMU: orientation and angular velocity only - NOT linear acceleration.
+    # Double-integrating accelerometer data for position is a well-known drift trap
+    # even on real hardware; wheel odometry's vx above is a far better position/velocity
+    # source, so acceleration isn't needed and its noise would only hurt.
+    # /imu/with_covariance, not /imu directly - see sensor_covariance_relay.py.
+    imu0: /imu/with_covariance
+    imu0_config: [false, false, false,
+                  true,  true,  true,
+                  false, false, false,
+                  true,  true,  true,
+                  false, false, false]
+    imu0_differential: false
+    imu0_relative: false
+    imu0_remove_gravitational_acceleration: true
+    imu0_queue_size: 10
