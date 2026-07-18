@@ -16,6 +16,9 @@ on:
       - "planetary/**"
       - ".github/workflows/regolith-build.yaml"
 
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-22.04
