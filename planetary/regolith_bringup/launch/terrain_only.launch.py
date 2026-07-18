@@ -18,7 +18,15 @@ def _generate_and_launch(context, *args, **kwargs):
     from regolith_terrain_gen.config import TerrainConfig
     from regolith_terrain_gen.generate import generate_world
 
-    seed = int(LaunchConfiguration("seed").perform(context))
+    raw_seed = LaunchConfiguration("seed").perform(context)
+    try:
+        seed = int(raw_seed)
+        if seed < 0:
+            raise ValueError
+    except ValueError:
+        raise RuntimeError(
+            f"Launch argument 'seed' must be a non-negative integer, got '{raw_seed}'"
+        ) from None
     cfg = TerrainConfig(seed=seed)
     world_sdf_path = generate_world(cfg, default_output_dir(seed))
 

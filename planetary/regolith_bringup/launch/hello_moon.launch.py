@@ -11,7 +11,8 @@ With `mission:=tour` (default `none`), a fixed 5-waypoint loop starts
 automatically after a short delay - see scripts/tour_mission.py. Otherwise,
 use RViz's "2D Goal Pose" tool to send goals yourself, same as
 autonomous_demo.launch.py (which this supersedes as the one-command entry
-point - see scripts/demo.sh).
+point - see scripts/demo.sh). RViz opens automatically with the rover config;
+pass rviz:=false to skip it (e.g. for headless runs).
 """
 
 from launch import LaunchDescription
@@ -34,7 +35,15 @@ def _generate_and_launch(context, *args, **kwargs):
     from regolith_terrain_gen.generate import generate_world
     import xacro
 
-    seed = int(LaunchConfiguration("seed").perform(context))
+    raw_seed = LaunchConfiguration("seed").perform(context)
+    try:
+        seed = int(raw_seed)
+        if seed < 0:
+            raise ValueError
+    except ValueError:
+        raise RuntimeError(
+            f"Launch argument 'seed' must be a non-negative integer, got '{raw_seed}'"
+        ) from None
     cfg = TerrainConfig(seed=seed)
     output_dir = default_output_dir(seed)
     world_sdf_path = generate_world(cfg, output_dir, start_paused=False)
@@ -167,6 +176,18 @@ def _generate_and_launch(context, *args, **kwargs):
         condition=IfCondition(PythonExpression(["'", LaunchConfiguration("mission"), "' == 'tour'"])),
     )
 
+    rviz_config = FindPackageShare("regolith_rover_description").find(
+        "regolith_rover_description"
+    ) + "/rviz/rover.rviz"
+    rviz = Node(
+        package="rviz2",
+        executable="rviz2",
+        output="screen",
+        arguments=["-d", rviz_config],
+        parameters=[{"use_sim_time": True}],
+        condition=IfCondition(LaunchConfiguration("rviz")),
+    )
+
     return [
         gz_sim,
         robot_state_publisher,
@@ -178,6 +199,7 @@ def _generate_and_launch(context, *args, **kwargs):
         planner_node,
         pure_pursuit_node,
         tour_mission,
+        rviz,
     ]
 
 
@@ -188,6 +210,10 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument(
                 "mission", default_value="none",
                 description="'tour' runs a scripted 5-waypoint loop automatically; otherwise click goals in RViz"
+            ),
+            DeclareLaunchArgument(
+                "rviz", default_value="true",
+                description="Launch RViz with the rover config (needed for clicking '2D Goal Pose' goals)"
             ),
             DeclareLaunchArgument(
                 "record_video", default_value="false",

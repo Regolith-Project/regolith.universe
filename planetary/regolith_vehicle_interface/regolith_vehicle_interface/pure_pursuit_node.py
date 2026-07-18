@@ -8,7 +8,9 @@ for why that package wasn't reused here).
 Recovery is intentionally minimal per the plan ("do not build elaborate FDIR
 now"): if the rover strays far from the path or stalls, it stops and
 re-triggers planning from wherever it currently is, rather than anything more
-sophisticated.
+sophisticated. The one hard failure it does detect explicitly is a flipped
+rover (large roll/pitch on the raw IMU): recovery can't help there, so it
+halts and says so loudly instead of replanning forever.
 """
 
 import numpy as np
@@ -17,11 +19,18 @@ from geometry_msgs.msg import PoseStamped, Twist
 from nav_msgs.msg import Odometry, OccupancyGrid, Path
 from rclpy.node import Node
 from rclpy.qos import QoSDurabilityPolicy, QoSProfile
+from sensor_msgs.msg import Imu
 from std_msgs.msg import Bool
 
 
 def _yaw_from_quaternion(q) -> float:
     return np.arctan2(2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y**2 + q.z**2))
+
+
+def _roll_pitch_from_quaternion(q) -> tuple:
+    roll = np.arctan2(2.0 * (q.w * q.x + q.y * q.z), 1.0 - 2.0 * (q.x**2 + q.y**2))
+    pitch = np.arcsin(np.clip(2.0 * (q.w * q.y - q.z * q.x), -1.0, 1.0))
+    return float(roll), float(pitch)
 
 
 def _normalize_angle(angle: float) -> float:
@@ -38,6 +47,7 @@ class PurePursuitNode(Node):
         self.declare_parameter("path_deviation_limit_m", 4.0)
         self.declare_parameter("stall_timeout_s", 8.0)
         self.declare_parameter("control_period_s", 0.1)
+        self.declare_parameter("flipped_attitude_deg", 60.0)
 
         self._path = None
         self._current_pose = None
@@ -46,6 +56,8 @@ class PurePursuitNode(Node):
         self._goal_reached = True
         self._last_progress_time = self.get_clock().now()
         self._last_progress_position = None
+        self._imu_orientation = None
+        self._flipped = False
 
         costmap_qos = QoSProfile(depth=1)
         costmap_qos.durability = QoSDurabilityPolicy.TRANSIENT_LOCAL
@@ -56,6 +68,11 @@ class PurePursuitNode(Node):
         self.create_subscription(Path, "/planned_path", self._on_path, path_qos)
 
         self.create_subscription(Odometry, "/odometry/filtered", self._on_odometry, 10)
+        # Raw IMU, for flip detection only: the EKF runs in two_d_mode, so its
+        # fused orientation never shows roll/pitch even when the rover is
+        # physically upside-down (see PROGRESS.md M5 - stall recovery used to
+        # silently replan forever after a flip).
+        self.create_subscription(Imu, "/imu", self._on_imu, 10)
         self.create_subscription(PoseStamped, "/goal_pose", self._on_goal, 10)
         self._goal_pub = self.create_publisher(PoseStamped, "/goal_pose", 10)
         self._cmd_pub = self.create_publisher(Twist, "/cmd_vel", 10)
@@ -79,6 +96,37 @@ class PurePursuitNode(Node):
     def _on_odometry(self, msg: Odometry) -> None:
         self._current_pose = msg.pose.pose
 
+    def _on_imu(self, msg: Imu) -> None:
+        self._imu_orientation = msg.orientation
+
+    def _check_flipped(self) -> bool:
+        """Fail loudly instead of silently cycling through stall recovery when the
+        rover is physically flipped. Returns True while the attitude is beyond the
+        limit (caller must stop and skip the control step)."""
+        if self._imu_orientation is None:
+            return False
+        roll, pitch = _roll_pitch_from_quaternion(self._imu_orientation)
+        limit = np.deg2rad(self.get_parameter("flipped_attitude_deg").value)
+        if abs(roll) > limit or abs(pitch) > limit:
+            if not self._flipped:
+                self._flipped = True
+                self.get_logger().error(
+                    f"Rover attitude is roll {np.degrees(roll):.0f} deg, pitch "
+                    f"{np.degrees(pitch):.0f} deg - it has likely flipped (known "
+                    "terrain-collision limitation, see PROGRESS.md M4). Halting path "
+                    "following; restart the demo to recover."
+                )
+            else:
+                self.get_logger().warn(
+                    "Rover still flipped - path following remains halted",
+                    throttle_duration_sec=30.0,
+                )
+            return True
+        if self._flipped:
+            self._flipped = False
+            self.get_logger().info("Rover attitude back within limits - resuming path following")
+        return False
+
     def _cost_at(self, x_m: float, y_m: float) -> float:
         if self._costmap is None:
             return 0.0
@@ -93,6 +141,9 @@ class PurePursuitNode(Node):
         self._cmd_pub.publish(Twist())
 
     def _control_step(self) -> None:
+        if self._check_flipped():
+            self._stop()
+            return
         if self._path is None or self._goal_reached or self._current_pose is None or len(self._path) == 0:
             return
 

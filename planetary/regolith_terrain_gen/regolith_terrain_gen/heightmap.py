@@ -106,7 +106,7 @@ def build_terrain_collision_boxes_sdf(
     step rate badly in this environment (real-time factor dropped to ~0.09,
     vs. ~0.5-0.6 at 24) - all those boxes live in one link now (see the
     module-level note above), so it's not the "many collisions -> freeze"
-    issue from M2, just the raw cost of that many collision shapes. 32 is a
+    issue from M2, just the raw cost of that many collision shapes. 24 is the
     middle-ground default, not a fully validated sweet spot.
     """
     n = heightmap.shape[0]

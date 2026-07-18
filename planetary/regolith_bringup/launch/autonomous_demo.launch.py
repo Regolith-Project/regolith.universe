@@ -28,7 +28,15 @@ def _generate_and_launch(context, *args, **kwargs):
     from regolith_terrain_gen.generate import generate_world
     import xacro
 
-    seed = int(LaunchConfiguration("seed").perform(context))
+    raw_seed = LaunchConfiguration("seed").perform(context)
+    try:
+        seed = int(raw_seed)
+        if seed < 0:
+            raise ValueError
+    except ValueError:
+        raise RuntimeError(
+            f"Launch argument 'seed' must be a non-negative integer, got '{raw_seed}'"
+        ) from None
     cfg = TerrainConfig(seed=seed)
     output_dir = default_output_dir(seed)
     world_sdf_path = generate_world(cfg, output_dir, start_paused=False)

@@ -10,4 +10,8 @@ the lookahead point exceeds 30° (driving forward while turning sharply on
 rough terrain was found to destabilize the rover - see PROGRESS.md M4).
 Minimal recovery per the plan ("do not build elaborate FDIR"): if the rover
 strays too far from the path or stalls, it stops and re-triggers planning
-from wherever it currently is.
+from wherever it currently is. If the raw IMU shows the rover has actually
+flipped (roll or pitch beyond `flipped_attitude_deg`, default 60° - a known
+terrain-collision failure mode, see PROGRESS.md M4), it halts and logs an
+error instead of silently replanning forever; it resumes automatically if
+the attitude ever returns to normal.

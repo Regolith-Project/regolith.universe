@@ -1,7 +1,7 @@
 # regolith_bringup
 
-Launch files, RViz config, and mission scripts for the Regolith hello-world
-demo. This is the package the plan's package table designates as the
+Launch files, EKF config, and mission scripts for the Regolith hello-world
+demo (the RViz config lives in `regolith_rover_description`). This is the package the plan's package table designates as the
 integration point — its launch files reference `regolith_terrain_gen`,
 `regolith_rover_description`, `regolith_planner`, and `regolith_costmap` by
 name, which is why it lives here in `regolith.universe/planetary/` alongside
@@ -25,15 +25,18 @@ those packages rather than in the `regolith` meta-repo.
   (`/ground_truth/pose`, never fed into the estimator). See PROGRESS.md M3.
 - `autonomous_demo.launch.py` — everything `localization_demo` does, plus
   `regolith_costmap` + `regolith_planner` + `regolith_vehicle_interface`:
-  click "2D Goal Pose" in RViz and the rover plans and drives there. See
+  click "2D Goal Pose" in RViz and the rover plans and drives there (this
+  launch file doesn't start RViz itself - open it manually, or use
+  `hello_moon.launch.py` below, which does). See
   PROGRESS.md M4 for the current state (pipeline works end-to-end at
   shorter range; full-distance runs hit an unresolved terrain-collision
   stability issue).
 - `hello_moon.launch.py` — the main entry point, superseding
   `autonomous_demo.launch.py` above (which it's built on and keeps
-  identical behavior to). Adds a `mission` argument:
+  identical behavior to). Also opens RViz with the rover config (disable
+  with `rviz:=false`) and adds a `mission` argument:
   `ros2 launch regolith_bringup hello_moon.launch.py seed:=42` behaves
-  exactly like `autonomous_demo.launch.py` (click a goal yourself);
+  like `autonomous_demo.launch.py` (click a goal yourself in RViz);
   `... mission:=tour` additionally runs `tour_mission.py`, a scripted
   5-waypoint loop, with no interaction needed. This is what
   `scripts/demo.sh` in the meta-repo launches. See PROGRESS.md M5 for the

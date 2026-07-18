@@ -10,7 +10,7 @@ from nav_msgs.msg import Odometry, OccupancyGrid, Path
 from rclpy.node import Node
 from rclpy.qos import QoSDurabilityPolicy, QoSProfile
 
-from regolith_planner.astar import plan_path, smooth_path
+from regolith_planner.astar import LETHAL_COST, plan_path, smooth_path
 
 
 class PlannerNode(Node):
@@ -65,11 +65,23 @@ class PlannerNode(Node):
             self.get_logger().warn("Goal is outside the costmap bounds")
             return
 
+        if cost_grid[goal_rc] >= LETHAL_COST:
+            self.get_logger().warn(
+                f"Goal cell {goal_rc} is lethal (obstacle or too-steep slope) - pick another goal"
+            )
+            return
+        if cost_grid[start_rc] >= LETHAL_COST:
+            self.get_logger().warn(
+                f"Current-position cell {start_rc} is lethal - the estimated pose sits inside an "
+                "inflated obstacle region (possibly localization drift); cannot plan from here"
+            )
+            return
+
         grid_path = plan_path(cost_grid, start_rc, goal_rc)
         if not grid_path:
             self.get_logger().warn(
-                f"No path found from {start_rc} to {goal_rc} (goal may be unreachable "
-                "or in a lethal cell)"
+                f"No traversable path exists from {start_rc} to {goal_rc} - the goal is "
+                "walled off by lethal cells"
             )
             return
 

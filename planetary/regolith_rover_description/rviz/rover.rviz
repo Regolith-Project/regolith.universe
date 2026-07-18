@@ -25,17 +25,45 @@ Visualization Manager:
       Name: Camera
       Topic:
         Value: /camera/image
+    - Alpha: 0.6
+      Class: rviz_default_plugins/Map
+      Color Scheme: costmap
+      Name: Costmap
+      Topic:
+        Durability Policy: Transient Local
+        Value: /costmap
+    - Class: rviz_default_plugins/Path
+      Color: 25; 255; 25
+      Line Style: Billboards
+      Line Width: 0.15
+      Name: PlannedPath
+      Topic:
+        Durability Policy: Transient Local
+        Value: /planned_path
     - Class: rviz_default_plugins/Odometry
-      Name: Odometry
+      Name: EKF Estimate
+      Topic:
+        Value: /odometry/filtered
+      Keep: 200
+    - Class: rviz_default_plugins/Odometry
+      Enabled: false
+      Name: Wheel Odometry
       Topic:
         Value: /odom
       Keep: 200
   Global Options:
     Fixed Frame: odom
+  Tools:
+    - Class: rviz_default_plugins/Interact
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Select
+    - Class: rviz_default_plugins/SetGoal
+      Topic:
+        Value: /goal_pose
   Views:
     Current:
       Class: rviz_default_plugins/Orbit
-      Distance: 4
+      Distance: 12
       Focal Point:
         X: 0
         Y: 0

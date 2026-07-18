@@ -31,6 +31,10 @@ def plan_path(cost_grid: np.ndarray, start_rc: tuple, goal_rc: tuple) -> list:
     """Returns a list of (row, col) grid cells from start to goal, or an empty
     list if no path exists."""
     rows, cols = cost_grid.shape
+    for rc in (start_rc, goal_rc):
+        # Explicit bounds check: negative indices would silently wrap around in numpy.
+        if not (0 <= rc[0] < rows and 0 <= rc[1] < cols):
+            return []
     if cost_grid[start_rc] >= LETHAL_COST or cost_grid[goal_rc] >= LETHAL_COST:
         return []
 

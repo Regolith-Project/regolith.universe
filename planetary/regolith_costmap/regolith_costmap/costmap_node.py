@@ -83,15 +83,28 @@ class CostmapNode(Node):
         self.declare_parameter("rover_radius_m", 0.3)
         self.declare_parameter("slope_lethal_deg", 20.0)
 
+        resolution_m = self.get_parameter("resolution_m").value
+        if resolution_m <= 0.0:
+            self.get_logger().error(f"Parameter resolution_m must be > 0, got {resolution_m}")
+            raise SystemExit(1)
+
         manifest_path = Path(self.get_parameter("manifest_path").value)
-        manifest = json.loads(manifest_path.read_text())
-        heightmap = np.array(Image.open(manifest["heightmap_png"])).astype(np.float64)
-        heightmap = heightmap / heightmap.max() * manifest["height_range_m"]
+        try:
+            manifest = json.loads(manifest_path.read_text())
+            heightmap = np.array(Image.open(manifest["heightmap_png"])).astype(np.float64)
+            heightmap = heightmap / heightmap.max() * manifest["height_range_m"]
+        except (OSError, KeyError, ValueError) as error:
+            self.get_logger().error(
+                f"Failed to load terrain manifest '{manifest_path}': {error!r}. The "
+                "regolith_bringup launch files generate it via regolith_terrain_gen; if it is "
+                "stale or corrupted, delete ~/.cache/regolith/worlds/seed_<N> and relaunch."
+            )
+            raise SystemExit(1)
 
         cost_grid, resolution_m, origin_x, origin_y = build_costmap(
             manifest,
             heightmap,
-            self.get_parameter("resolution_m").value,
+            resolution_m,
             self.get_parameter("rover_radius_m").value,
             self.get_parameter("slope_lethal_deg").value,
         )

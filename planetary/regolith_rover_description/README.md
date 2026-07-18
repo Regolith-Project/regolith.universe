@@ -16,8 +16,10 @@ flipped when turning and driving forward at once over rough terrain.
 - `urdf/regolith_rover.urdf.xacro` — the rover description; processed by
   `regolith_bringup`'s launch files via the `xacro` Python API (in-process,
   not shelled out).
-- `rviz/rover.rviz` — RViz config with RobotModel, TF, Camera, and Odometry
-  displays.
+- `rviz/rover.rviz` — RViz config with RobotModel, TF, Camera, Costmap,
+  PlannedPath, and EKF-estimate Odometry displays (raw wheel odometry is
+  included but disabled by default), plus a "2D Goal Pose" tool publishing
+  `/goal_pose`. Launched automatically by `hello_moon.launch.py`.
 
 ## Gazebo topics
 

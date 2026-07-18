@@ -9,5 +9,6 @@ on `/costmap`.
 
 ## Usage
 
-Launched by `regolith_bringup/autonomous_demo.launch.py`, which passes
-`manifest_path` (from `regolith_terrain_gen`'s output) as a parameter.
+Launched by `regolith_bringup`'s `autonomous_demo.launch.py` and
+`hello_moon.launch.py`, which pass `manifest_path` (from
+`regolith_terrain_gen`'s output) as a parameter.
