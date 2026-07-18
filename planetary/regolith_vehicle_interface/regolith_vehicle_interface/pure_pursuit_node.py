@@ -9,8 +9,10 @@ Recovery is intentionally minimal per the plan ("do not build elaborate FDIR
 now"): if the rover strays far from the path or stalls, it stops and
 re-triggers planning from wherever it currently is, rather than anything more
 sophisticated. The one hard failure it does detect explicitly is a flipped
-rover (large roll/pitch on the raw IMU): recovery can't help there, so it
-halts and says so loudly instead of replanning forever.
+rover (large roll/pitch on the raw IMU): it pauses following instead of
+replanning forever, and the separate flip_recovery_node performs a simulated
+set_pose righting, after which this node's attitude check clears and following
+resumes automatically.
 """
 
 import numpy as np
@@ -112,9 +114,9 @@ class PurePursuitNode(Node):
                 self._flipped = True
                 self.get_logger().error(
                     f"Rover attitude is roll {np.degrees(roll):.0f} deg, pitch "
-                    f"{np.degrees(pitch):.0f} deg - it has likely flipped (known "
-                    "terrain-collision limitation, see PROGRESS.md M4). Halting path "
-                    "following; restart the demo to recover."
+                    f"{np.degrees(pitch):.0f} deg - it has likely flipped. Pausing path "
+                    "following; the flip_recovery_node should teleport it upright "
+                    "(simulated recovery), after which following resumes automatically."
                 )
             else:
                 self.get_logger().warn(

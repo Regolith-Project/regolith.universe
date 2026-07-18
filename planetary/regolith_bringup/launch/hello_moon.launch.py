@@ -168,6 +168,17 @@ def _generate_and_launch(context, *args, **kwargs):
         parameters=[{"use_sim_time": True}],
     )
 
+    # Simulated flip recovery backstop: if the rover still ends up flipped (the
+    # tilted-slab terrain collision makes this rare, not impossible), teleport it
+    # upright to its last known-good pose via gz set_pose rather than leaving the
+    # demo dead. Explicitly a simulated self-right - see flip_recovery_node.py.
+    flip_recovery_node = Node(
+        package="regolith_bringup",
+        executable="flip_recovery_node.py",
+        output="screen",
+        parameters=[{"use_sim_time": True, "world_name": WORLD_NAME, "model_name": ROVER_NAME}],
+    )
+
     tour_mission = Node(
         package="regolith_bringup",
         executable="tour_mission.py",
@@ -198,6 +209,7 @@ def _generate_and_launch(context, *args, **kwargs):
         costmap_node,
         planner_node,
         pure_pursuit_node,
+        flip_recovery_node,
         tour_mission,
         rviz,
     ]
