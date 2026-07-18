@@ -29,3 +29,31 @@ those packages rather than in the `regolith` meta-repo.
   PROGRESS.md M4 for the current state (pipeline works end-to-end at
   shorter range; full-distance runs hit an unresolved terrain-collision
   stability issue).
+- `hello_moon.launch.py` — the main entry point, superseding
+  `autonomous_demo.launch.py` above (which it's built on and keeps
+  identical behavior to). Adds a `mission` argument:
+  `ros2 launch regolith_bringup hello_moon.launch.py seed:=42` behaves
+  exactly like `autonomous_demo.launch.py` (click a goal yourself);
+  `... mission:=tour` additionally runs `tour_mission.py`, a scripted
+  5-waypoint loop, with no interaction needed. This is what
+  `scripts/demo.sh` in the meta-repo launches. See PROGRESS.md M5 for the
+  current state, including a confirmed instance of the M4 flip issue
+  occurring during an unattended tour run.
+
+  Pass `record_video:=true` to record the onboard camera straight to an mp4
+  via gz-sim's server-side `CameraVideoRecorder` plugin - this bypasses the
+  GUI/desktop-compositor entirely, which matters under WSLg (see
+  PROGRESS.md M5: neither `ffmpeg -f x11grab` nor reading the raw
+  `/camera/image` topic produced usable footage there). Start and stop the
+  recording with:
+
+  ```bash
+  gz service -s /rover/camera/record_video --reqtype gz.msgs.VideoRecord \
+    --reptype gz.msgs.Boolean --timeout 300 \
+    --req 'start: true, format:"mp4", save_filename:"demo.mp4"'
+
+  gz service -s /rover/camera/record_video --reqtype gz.msgs.VideoRecord \
+    --reptype gz.msgs.Boolean --timeout 300 --req 'stop: true'
+  ```
+
+  `demo.mp4` is written to the directory `gz sim` was started from.

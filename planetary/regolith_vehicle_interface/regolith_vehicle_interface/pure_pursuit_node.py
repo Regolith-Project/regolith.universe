@@ -17,6 +17,7 @@ from geometry_msgs.msg import PoseStamped, Twist
 from nav_msgs.msg import Odometry, OccupancyGrid, Path
 from rclpy.node import Node
 from rclpy.qos import QoSDurabilityPolicy, QoSProfile
+from std_msgs.msg import Bool
 
 
 def _yaw_from_quaternion(q) -> float:
@@ -58,6 +59,7 @@ class PurePursuitNode(Node):
         self.create_subscription(PoseStamped, "/goal_pose", self._on_goal, 10)
         self._goal_pub = self.create_publisher(PoseStamped, "/goal_pose", 10)
         self._cmd_pub = self.create_publisher(Twist, "/cmd_vel", 10)
+        self._goal_reached_pub = self.create_publisher(Bool, "/goal_reached", 10)
 
         period = self.get_parameter("control_period_s").value
         self.create_timer(period, self._control_step)
@@ -103,6 +105,7 @@ class PurePursuitNode(Node):
             self._stop()
             self._goal_reached = True
             self.get_logger().info(f"Goal reached (within {distance_to_goal:.2f} m)")
+            self._goal_reached_pub.publish(Bool(data=True))
             return
 
         distances = np.linalg.norm(self._path - position, axis=1)

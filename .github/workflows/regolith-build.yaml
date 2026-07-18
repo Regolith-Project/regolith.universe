@@ -1,0 +1,37 @@
+name: regolith-build
+
+# Minimal CI for the Regolith planetary packages specifically (planetary/regolith_*),
+# not the full autoware_universe tree this repo forks from - that tree's existing
+# CI workflows (build-and-test*.yaml etc.) are untouched and out of scope here. This
+# is build-only, no simulation (Gazebo/GPU rendering isn't available on CI runners).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "planetary/**"
+      - ".github/workflows/regolith-build.yaml"
+  pull_request:
+    paths:
+      - "planetary/**"
+      - ".github/workflows/regolith-build.yaml"
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    container: ros:humble-ros-base
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: src/regolith.universe
+
+      - name: rosdep install
+        run: |
+          apt-get update
+          rosdep update
+          rosdep install --from-paths src/regolith.universe/planetary --ignore-src -y
+
+      - name: colcon build
+        run: |
+          . /opt/ros/humble/setup.sh
+          colcon build --packages-up-to regolith_bringup
