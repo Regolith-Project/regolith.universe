@@ -27,10 +27,11 @@ those packages rather than in the `regolith` meta-repo.
   `regolith_costmap` + `regolith_planner` + `regolith_vehicle_interface`:
   click "2D Goal Pose" in RViz and the rover plans and drives there (this
   launch file doesn't start RViz itself - open it manually, or use
-  `hello_moon.launch.py` below, which does). See
-  PROGRESS.md M4 for the current state (pipeline works end-to-end at
-  shorter range; full-distance runs hit an unresolved terrain-collision
-  stability issue).
+  `hello_moon.launch.py` below, which does). See PROGRESS.md's "M4
+  acceptance check: full 60-100 m / 3-consecutive-run result" for current
+  status - the terrain-collision flip issue referenced by older notes below
+  was root-caused and fixed, and the full-distance/3-consecutive-seed
+  acceptance check now passes.
 - `hello_moon.launch.py` — the main entry point, superseding
   `autonomous_demo.launch.py` above (which it's built on and keeps
   identical behavior to). Also opens RViz with the rover config (disable
@@ -41,7 +42,10 @@ those packages rather than in the `regolith` meta-repo.
   5-waypoint loop, with no interaction needed. This is what
   `scripts/demo.sh` in the meta-repo launches. See PROGRESS.md M5 for the
   current state, including a confirmed instance of the M4 flip issue
-  occurring during an unattended tour run.
+  occurring during an unattended tour run (also since fixed - see above).
+  Pass `headless:=true` to skip the Gazebo GUI window entirely (server-only,
+  `-s`) for unattended/automated runs - distinct from `rviz:=false`, which
+  only skips RViz.
 
   Pass `record_video:=true` to record the onboard camera straight to an mp4
   via gz-sim's server-side `CameraVideoRecorder` plugin - this bypasses the

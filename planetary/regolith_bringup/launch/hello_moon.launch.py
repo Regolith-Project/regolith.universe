@@ -64,11 +64,13 @@ def _generate_and_launch(context, *args, **kwargs):
     rover_urdf_path = output_dir / "rover.urdf"
     rover_urdf_path.write_text(urdf_xml)
 
+    headless = LaunchConfiguration("headless").perform(context)
+    gz_flags = "-r -s" if headless.lower() == "true" else "-r"
     gz_sim = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             [FindPackageShare("ros_gz_sim"), "/launch/gz_sim.launch.py"]
         ),
-        launch_arguments={"gz_args": f"-r {world_sdf_path}"}.items(),
+        launch_arguments={"gz_args": f"{gz_flags} {world_sdf_path}"}.items(),
     )
 
     robot_state_publisher = Node(
@@ -226,6 +228,10 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument(
                 "rviz", default_value="true",
                 description="Launch RViz with the rover config (needed for clicking '2D Goal Pose' goals)"
+            ),
+            DeclareLaunchArgument(
+                "headless", default_value="false",
+                description="Run Gazebo server-only (-s), no GUI window - for unattended/automated runs"
             ),
             DeclareLaunchArgument(
                 "record_video", default_value="false",
