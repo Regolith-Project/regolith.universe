@@ -15,6 +15,12 @@ point - see scripts/demo.sh). RViz opens automatically with the rover config;
 pass rviz:=false to skip it (e.g. for headless runs).
 """
 
+import atexit
+import fcntl
+import os
+import random
+from pathlib import Path
+
 from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
@@ -35,6 +41,119 @@ from launch_ros.substitutions import FindPackageShare
 ROVER_NAME = "rover"
 WORLD_NAME = "regolith_moon"
 
+# Registry of ROS_DOMAIN_IDs currently claimed by live regolith launches. Each
+# claimed id N is a file "N.lock" here containing the claiming launch's PID; a
+# ".registry.lock" flock serialises the claim so two launches racing each other
+# can never pick the same id. See _allocate_domain_id below and PROGRESS.md's
+# "Per-launch ROS_DOMAIN_ID isolation" section.
+_DOMAIN_REGISTRY_DIR = Path(os.path.expanduser("~/.ros/regolith_domain_ids"))
+# 1-101, skipping 0: 0 is the DDS default domain every un-configured ROS process
+# on the box lands on, so avoiding it keeps us clear of unrelated ROS traffic
+# too. 0-101 is the Linux-safe range (higher ids collide with the ephemeral port
+# range); see the design note in PROGRESS.md.
+_DOMAIN_ID_MIN = 1
+_DOMAIN_ID_MAX = 101
+
+
+def _pid_alive(pid: int) -> bool:
+    """True if a process with this PID currently exists (signal 0 probes it)."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        # Exists but owned by someone else - still "alive" for our purposes.
+        return True
+    return True
+
+
+def _release_domain_claim(lock_path: Path) -> None:
+    """Best-effort removal of our own claim file on clean interpreter exit.
+
+    Not relied on for correctness: if the launch is SIGKILLed (or otherwise dies
+    without running atexit handlers) the claim file is left behind, but the next
+    launch reclaims it via the _pid_alive() staleness check, so a leaked file is
+    self-healing rather than a permanent leak of a domain id.
+    """
+    try:
+        if lock_path.read_text().strip().split()[0] == str(os.getpid()):
+            lock_path.unlink()
+    except (OSError, IndexError):
+        pass
+
+
+def _allocate_domain_id() -> int:
+    """Claim a ROS_DOMAIN_ID no concurrently-live regolith launch is using and
+    export it into os.environ, so every process this launch subsequently spawns
+    (gz sim, the ros_gz bridge, EKF, planner, rviz, ...) shares one DDS domain
+    that is isolated from any other launch's domain.
+
+    This is the structural fix for the overnight-freeze root cause (two launches
+    sharing one ROS graph over identical topic names - see PROGRESS.md). A
+    directory of PID-tagged lock files, guarded by a single flock, makes the
+    claim atomic across processes: two launches started at the same instant
+    serialise on the flock and are guaranteed distinct ids. Stale claims from a
+    crashed launch are reclaimed via a liveness check on the recorded PID.
+
+    An explicitly-set ROS_DOMAIN_ID in the environment is honoured as-is (the
+    user asked for that specific domain); we still record it in the registry
+    best-effort so a concurrent auto-allocation avoids it, but we never refuse
+    or override it.
+    """
+    _DOMAIN_REGISTRY_DIR.mkdir(parents=True, exist_ok=True)
+    registry_lock_fd = os.open(
+        str(_DOMAIN_REGISTRY_DIR / ".registry.lock"), os.O_CREAT | os.O_RDWR, 0o644
+    )
+    try:
+        fcntl.flock(registry_lock_fd, fcntl.LOCK_EX)
+
+        preset = os.environ.get("ROS_DOMAIN_ID", "").strip()
+        if preset:
+            try:
+                preset_id = int(preset)
+            except ValueError:
+                preset_id = None
+            if preset_id is not None:
+                # Best-effort claim; do not refuse if already held (explicit
+                # user intent wins over our collision-avoidance).
+                lock_path = _DOMAIN_REGISTRY_DIR / f"{preset_id}.lock"
+                if not lock_path.exists():
+                    lock_path.write_text(f"{os.getpid()} {preset_id}\n")
+                    atexit.register(_release_domain_claim, lock_path)
+                return preset_id
+
+        candidates = list(range(_DOMAIN_ID_MIN, _DOMAIN_ID_MAX + 1))
+        random.shuffle(candidates)
+        for domain_id in candidates:
+            lock_path = _DOMAIN_REGISTRY_DIR / f"{domain_id}.lock"
+            if lock_path.exists():
+                try:
+                    holder_pid = int(lock_path.read_text().strip().split()[0])
+                except (OSError, ValueError, IndexError):
+                    holder_pid = None
+                if holder_pid is not None and _pid_alive(holder_pid):
+                    continue  # genuinely in use by another live launch
+                # Stale claim from a crashed/killed launch - reclaim it. Safe:
+                # we hold the registry flock, so no other launch is scanning.
+                try:
+                    lock_path.unlink()
+                except OSError:
+                    continue
+            lock_path.write_text(f"{os.getpid()} {domain_id}\n")
+            atexit.register(_release_domain_claim, lock_path)
+            os.environ["ROS_DOMAIN_ID"] = str(domain_id)
+            return domain_id
+
+        # All 101 ids claimed by live launches (would need 101 concurrent
+        # regolith sims). No isolation guarantee is possible here; fall back to a
+        # random pick and let the collision happen rather than refusing to launch.
+        domain_id = random.randint(_DOMAIN_ID_MIN, _DOMAIN_ID_MAX)
+        os.environ["ROS_DOMAIN_ID"] = str(domain_id)
+        return domain_id
+    finally:
+        fcntl.flock(registry_lock_fd, fcntl.LOCK_UN)
+        os.close(registry_lock_fd)
+
 
 def _generate_and_launch(context, *args, **kwargs):
     import json
@@ -43,6 +162,22 @@ def _generate_and_launch(context, *args, **kwargs):
     from regolith_terrain_gen.config import TerrainConfig
     from regolith_terrain_gen.generate import generate_world
     import xacro
+
+    # Claim a private ROS_DOMAIN_ID *first*, before any of the actions returned
+    # below are built or spawned. Mutating os.environ here (inside the running
+    # OpaqueFunction) means every subsequently-spawned process - the Nodes and
+    # ExecuteProcesses returned at the bottom of this function AND the ones inside
+    # the included ros_gz_sim/gz_sim.launch.py - captures the new value at spawn
+    # time, so the whole launch tree shares one DDS domain isolated from any other
+    # launch. This makes the overnight-freeze failure mode (two launches merging
+    # into one ROS graph over shared topic names) structurally impossible between
+    # any two launches that each get a distinct id. See PROGRESS.md.
+    domain_id = _allocate_domain_id()
+    print(
+        f"[hello_moon.launch] Using ROS_DOMAIN_ID={domain_id} "
+        f"(isolated DDS domain for this launch - see PROGRESS.md)",
+        flush=True,
+    )
 
     raw_seed = LaunchConfiguration("seed").perform(context)
     try:
