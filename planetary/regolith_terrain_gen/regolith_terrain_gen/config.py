@@ -25,7 +25,17 @@ class TerrainConfig:
     regional_slope_deg: float = 1.5
 
     # Crater field (power-law size-frequency distribution)
-    crater_count: int = 60
+    # crater_count and rock_count were raised from their original values (60 / 130)
+    # and spawn_zone_radius_m lowered from 12.0: measured against the actual costmap
+    # lethality (not just raw obstacle footprints), the original density let a
+    # majority of short (10-20 m) straight lines pass completely clear of any
+    # obstacle - e.g. the shipped tour_mission.py's fixed 5-leg route crossed an
+    # obstacle on only 1 of 5 legs, so the rover barely had to turn. These values
+    # were chosen by measuring straight-line-blocked fraction and A* reachability
+    # together across several seeds (60-100 m and 10-20 m goals) rather than eyeballed
+    # - see PROGRESS.md's "Terrain density increase" note for the actual numbers
+    # and the trade-off against a small increase in unreachable-goal risk.
+    crater_count: int = 100
     crater_diameter_min_m: float = 2.0
     crater_diameter_max_m: float = 40.0
     crater_size_exponent: float = 2.0  # N(>D) ~ D^-exponent
@@ -34,11 +44,11 @@ class TerrainConfig:
     crater_rim_width_frac: float = 0.18  # rim gaussian width as a fraction of crater radius
 
     # Spawn zone (guaranteed traversable, kept clear of craters/rocks)
-    spawn_zone_radius_m: float = 12.0
+    spawn_zone_radius_m: float = 9.0
     spawn_zone_center: tuple = (0.0, 0.0)
 
     # Rocks
-    rock_count: int = 130
+    rock_count: int = 190
     rock_variant_count: int = 4
     rock_scale_min_m: float = 0.3
     rock_scale_max_m: float = 2.4

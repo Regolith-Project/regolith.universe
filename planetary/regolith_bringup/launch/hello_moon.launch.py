@@ -16,8 +16,17 @@ pass rviz:=false to skip it (e.g. for headless runs).
 """
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, ExecuteProcess, IncludeLaunchDescription, OpaqueFunction, TimerAction
+from launch.actions import (
+    DeclareLaunchArgument,
+    ExecuteProcess,
+    IncludeLaunchDescription,
+    OpaqueFunction,
+    RegisterEventHandler,
+    Shutdown,
+    TimerAction,
+)
 from launch.conditions import IfCondition
+from launch.event_handlers import OnProcessExit
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
@@ -201,6 +210,38 @@ def _generate_and_launch(context, *args, **kwargs):
         condition=IfCondition(LaunchConfiguration("rviz")),
     )
 
+    # If any long-running node dies unexpectedly, shut the whole launch tree
+    # down instead of leaving the rest running as orphans - a leftover node
+    # set from a broken launch has no ROS_DOMAIN_ID/namespace isolation from a
+    # later launch and silently fights it over shared topic names (this is
+    # exactly what caused the overnight freeze investigated in PROGRESS.md:
+    # `parameter_bridge` died, nothing tore the rest down, and a second launch
+    # 8 minutes later collided with the survivors for the next 9 hours).
+    # `spawn_rover` is deliberately excluded - it's a one-shot process that is
+    # *supposed* to exit once the rover is spawned.
+    shutdown_on_unexpected_exit = [
+        RegisterEventHandler(
+            OnProcessExit(
+                target_action=node,
+                on_exit=Shutdown(
+                    reason=f"'{name}' exited unexpectedly - shutting down the rest of the demo"
+                ),
+            )
+        )
+        for name, node in [
+            ("robot_state_publisher", robot_state_publisher),
+            ("parameter_bridge", bridge),
+            ("sensor_covariance_relay", sensor_covariance_relay),
+            ("ekf_node", ekf_node),
+            ("costmap_node", costmap_node),
+            ("planner_node", planner_node),
+            ("pure_pursuit_node", pure_pursuit_node),
+            ("flip_recovery_node", flip_recovery_node),
+            ("tour_mission", tour_mission),
+            ("rviz2", rviz),
+        ]
+    ]
+
     return [
         gz_sim,
         robot_state_publisher,
@@ -214,6 +255,7 @@ def _generate_and_launch(context, *args, **kwargs):
         flip_recovery_node,
         tour_mission,
         rviz,
+        *shutdown_on_unexpected_exit,
     ]
 
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # Copyright 2026 Regolith Project contributors
 # SPDX-License-Identifier: Apache-2.0
-"""Simulated flip recovery for the Regolith demo.
+"""Flip and stuck recovery for the Regolith demo.
 
 The primary flip fix is preventive: the terrain collision geometry now uses
 tilted "shingle" slabs instead of flat-topped boxes, which collapses the
@@ -25,10 +25,30 @@ rover's (x, y) essentially where it was - stepping back only ~backoff_s of
 travel to get off the offending lip - so the localization estimate (which
 does not observe the teleport) stays consistent with the physical position to
 within its normal noise, and forces the orientation upright.
+
+This node also carries a second, unrelated backstop: a "stuck" detector. In a
+tight skid-steer turn, the fixed-axle wheels must scrub laterally, and under
+lunar gravity the low wheel normal force gives a narrow friction cone - the
+dartsim contact solver occasionally collapses to an all-static solution where
+the commanded joint velocity is infeasible, and the rover's wheels lock up
+entirely while remaining upright (no roll/pitch, so the flip detector above
+never sees it - confirmed via direct testing: ground-truth position AND yaw
+both froze solid for the rest of a run while /cmd_vel kept commanding
+nonzero motion). Also confirmed directly: switching the *command* to a plain
+straight line (no angular component) broke the lock immediately, while the
+rover's position did not change on its own. That points at static friction
+under the turn demand, not a geometric wedge, and - unlike the flip case - a
+straight-line recovery nudge is something a real rover's FDIR could
+plausibly do too; it is not labelled "simulated" the way the flip reset is.
+Detection here is simple: ground truth reports near-zero motion while a
+non-trivial /cmd_vel is being commanded, sustained past a debounce. Recovery
+briefly takes over /cmd_vel with a straight-line command at a rate high
+enough to dominate whatever else is publishing, then returns control.
 """
 
 import math
 import subprocess
+import time
 from collections import deque
 
 import rclpy
@@ -58,6 +78,15 @@ class FlipRecoveryNode(Node):
         self.declare_parameter("clearance_m", 0.3)  # z lift above recorded ground height
         self.declare_parameter("check_period_s", 0.2)
 
+        # Stuck (wheels-locked-but-upright) detection: see module docstring.
+        self.declare_parameter("stuck_min_speed_mps", 0.02)      # GT speed below this counts as "not moving"
+        self.declare_parameter("stuck_min_commanded_mps", 0.03)  # /cmd_vel magnitude above this counts as "trying to move"
+        self.declare_parameter("stuck_debounce_s", 3.0)          # sustained mismatch before acting
+        self.declare_parameter("stuck_nudge_speed_mps", 0.2)     # straight-line override speed
+        self.declare_parameter("stuck_nudge_duration_s", 1.0)    # how long the override holds /cmd_vel
+        self.declare_parameter("stuck_nudge_rate_hz", 30.0)      # publish rate during the override (must beat pure_pursuit's 10 Hz)
+        self.declare_parameter("stuck_cooldown_s", 5.0)          # re-arm delay after a stuck recovery
+
         # ~180 s of upright trail at check_period_s, so progressive backoff can
         # step back to a genuinely different location rather than the same lip.
         self._history = deque(maxlen=900)  # (t, x, y, z, yaw) upright poses
@@ -68,17 +97,30 @@ class FlipRecoveryNode(Node):
         self._consecutive = 0        # rapid re-flips near the same spot
         self._last_reset_t = None
 
+        self._last_cmd = Twist()
+        self._prev_tick_pose = None   # (t, x, y) from the previous _tick, for a GT speed estimate
+        self._stuck_since = None
+        self._stuck_cooldown_until = None
+        self._stuck_resets = 0
+
         self.create_subscription(PoseStamped, "/ground_truth/pose", self._on_pose, 10)
+        self.create_subscription(Twist, "/cmd_vel", self._on_cmd, 10)
         self._cmd_pub = self.create_publisher(Twist, "/cmd_vel", 10)
         period = self.get_parameter("check_period_s").value
         self.create_timer(period, self._tick)
-        self.get_logger().info("Flip recovery armed (simulated set_pose backstop)")
+        self.get_logger().info(
+            "Flip/stuck recovery armed (simulated set_pose backstop for flips, "
+            "straight-line cmd_vel override for stuck-but-upright)"
+        )
 
     def _now_s(self) -> float:
         return self.get_clock().now().nanoseconds / 1e9
 
     def _on_pose(self, msg: PoseStamped) -> None:
         self._pose = msg.pose
+
+    def _on_cmd(self, msg: Twist) -> None:
+        self._last_cmd = msg
 
     def _tick(self) -> None:
         if self._pose is None:
@@ -93,7 +135,11 @@ class FlipRecoveryNode(Node):
             # Upright: record as a candidate recovery pose.
             self._history.append((t, p.x, p.y, p.z, yaw))
             self._flip_since = None
+            self._check_stuck(t, p)
             return
+
+        self._prev_tick_pose = (t, p.x, p.y)
+        self._stuck_since = None  # a flip supersedes any in-progress stuck timer
 
         if abs(roll) > flip or abs(pitch) > flip:
             if self._cooldown_until is not None and t < self._cooldown_until:
@@ -104,6 +150,67 @@ class FlipRecoveryNode(Node):
             if (t - self._flip_since) < self.get_parameter("debounce_s").value:
                 return
             self._recover(roll, pitch)
+
+    def _check_stuck(self, t: float, p) -> None:
+        prev = self._prev_tick_pose
+        self._prev_tick_pose = (t, p.x, p.y)
+        if prev is None:
+            return
+        dt = t - prev[0]
+        if dt <= 0.0:
+            return
+        gt_speed = math.hypot(p.x - prev[1], p.y - prev[2]) / dt
+
+        cmd = self._last_cmd
+        half_track = 0.23  # regolith_rover's wheel_separation / 2 - see regolith_rover.urdf.xacro
+        commanded_speed = abs(cmd.linear.x) + abs(cmd.angular.z) * half_track
+        min_commanded = self.get_parameter("stuck_min_commanded_mps").value
+        min_speed = self.get_parameter("stuck_min_speed_mps").value
+
+        if commanded_speed < min_commanded or gt_speed >= min_speed:
+            self._stuck_since = None
+            return
+
+        if self._stuck_cooldown_until is not None and t < self._stuck_cooldown_until:
+            return
+        if self._stuck_since is None:
+            self._stuck_since = t
+            return
+        if (t - self._stuck_since) < self.get_parameter("stuck_debounce_s").value:
+            return
+        self._recover_stuck()
+
+    def _recover_stuck(self) -> None:
+        # Blocking burst, not a timer callback: this needs to publish faster than
+        # pure_pursuit_node's 10 Hz control loop for the whole window so the override
+        # actually reaches gz-sim instead of being immediately overwritten by whatever
+        # else is publishing /cmd_vel. _set_pose (used by the flip path) already
+        # blocks the executor for up to 6s, so a short blocking burst here is
+        # consistent with this node's existing style.
+        speed = self.get_parameter("stuck_nudge_speed_mps").value
+        duration = self.get_parameter("stuck_nudge_duration_s").value
+        rate_hz = self.get_parameter("stuck_nudge_rate_hz").value
+        override = Twist()
+        override.linear.x = speed
+
+        deadline = time.monotonic() + duration
+        while time.monotonic() < deadline:
+            self._cmd_pub.publish(override)
+            time.sleep(1.0 / rate_hz)
+
+        self._stuck_resets += 1
+        self.get_logger().warn(
+            f"STUCK RECOVERY #{self._stuck_resets}: rover was commanded to move but ground "
+            f"truth showed no motion for {self.get_parameter('stuck_debounce_s').value:.0f}s "
+            "(wheels locked but upright - a dartsim static-friction lock under tight-turn "
+            "lateral scrub at low lunar-gravity normal force, not a flip - see "
+            f"flip_recovery_node.py). Took over /cmd_vel for {duration:.1f}s with a straight "
+            f"{speed:.2f} m/s command to break the lock; a real rover's FDIR could do the same."
+        )
+        t_now = self._now_s()
+        self._stuck_since = None
+        self._prev_tick_pose = None  # the override moved the rover; don't measure speed across it
+        self._stuck_cooldown_until = t_now + self.get_parameter("stuck_cooldown_s").value
 
     def _recover(self, roll: float, pitch: float) -> None:
         if not self._history:

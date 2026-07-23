@@ -50,6 +50,17 @@ class PurePursuitNode(Node):
         self.declare_parameter("stall_timeout_s", 8.0)
         self.declare_parameter("control_period_s", 0.1)
         self.declare_parameter("flipped_attitude_deg", 60.0)
+        # Recovery is deliberately minimal (see module docstring), but minimal
+        # still needs a floor: without a cap, a goal that's unreachable in
+        # practice (terrain edge case, or the rover genuinely stuck nearby)
+        # makes _replan() retrigger itself forever - observed running for
+        # hours straight, tens of thousands of "stopping and replanning"
+        # cycles, in a session where it turned out two overlapping demo
+        # launches were also fighting over /goal_pose (see PROGRESS.md's
+        # "overnight freeze" note). That root cause is separate, but this
+        # node having no give-up condition at all made it far worse, and is
+        # worth fixing on its own regardless of what triggers the retries.
+        self.declare_parameter("max_consecutive_replans", 8)
 
         self._path = None
         self._current_pose = None
@@ -60,6 +71,8 @@ class PurePursuitNode(Node):
         self._last_progress_position = None
         self._imu_orientation = None
         self._flipped = False
+        self._replan_count = 0
+        self._given_up_goal_xy = None  # (x, y) of a goal we've stopped retrying
 
         costmap_qos = QoSProfile(depth=1)
         costmap_qos.durability = QoSDurabilityPolicy.TRANSIENT_LOCAL
@@ -93,6 +106,18 @@ class PurePursuitNode(Node):
         self._last_progress_position = None
 
     def _on_goal(self, msg: PoseStamped) -> None:
+        new_xy = (msg.pose.position.x, msg.pose.position.y)
+        old_xy = (
+            (self._current_goal.pose.position.x, self._current_goal.pose.position.y)
+            if self._current_goal is not None
+            else None
+        )
+        if new_xy != old_xy:
+            # A genuinely new goal (RViz click, or the next tour waypoint) -
+            # separate from this node's own _replan() republishing the same
+            # goal after a deviation/stall. Give the new goal a fresh budget.
+            self._replan_count = 0
+            self._given_up_goal_xy = None
         self._current_goal = msg
 
     def _on_odometry(self, msg: Odometry) -> None:
@@ -149,6 +174,14 @@ class PurePursuitNode(Node):
         if self._path is None or self._goal_reached or self._current_pose is None or len(self._path) == 0:
             return
 
+        current_goal_xy = (
+            (self._current_goal.pose.position.x, self._current_goal.pose.position.y)
+            if self._current_goal is not None
+            else None
+        )
+        if self._given_up_goal_xy is not None and self._given_up_goal_xy == current_goal_xy:
+            return
+
         position = np.array([self._current_pose.position.x, self._current_pose.position.y])
         yaw = _yaw_from_quaternion(self._current_pose.orientation)
 
@@ -157,6 +190,8 @@ class PurePursuitNode(Node):
         if distance_to_goal < self.get_parameter("goal_tolerance_m").value:
             self._stop()
             self._goal_reached = True
+            self._replan_count = 0
+            self._given_up_goal_xy = None
             self.get_logger().info(f"Goal reached (within {distance_to_goal:.2f} m)")
             self._goal_reached_pub.publish(Bool(data=True))
             return
@@ -227,11 +262,28 @@ class PurePursuitNode(Node):
         return False
 
     def _replan(self) -> None:
-        if self._current_goal is not None:
-            self._goal_pub.publish(self._current_goal)
         self._path = None
         self._last_progress_position = None
         self._last_progress_time = self.get_clock().now()
+
+        if self._current_goal is None:
+            return
+
+        self._replan_count += 1
+        max_replans = self.get_parameter("max_consecutive_replans").value
+        if self._replan_count > max_replans:
+            goal_xy = (self._current_goal.pose.position.x, self._current_goal.pose.position.y)
+            self._given_up_goal_xy = goal_xy
+            self.get_logger().error(
+                f"Giving up on goal ({goal_xy[0]:.1f}, {goal_xy[1]:.1f}) after "
+                f"{self._replan_count} consecutive deviate/stall replans with no progress - "
+                "not retrying it again until a genuinely new /goal_pose arrives. (This cap "
+                "exists so an unreachable goal can't loop forever - see PROGRESS.md's "
+                "\"overnight freeze\" note for why.)"
+            )
+            return
+
+        self._goal_pub.publish(self._current_goal)
 
 
 def main() -> None:
