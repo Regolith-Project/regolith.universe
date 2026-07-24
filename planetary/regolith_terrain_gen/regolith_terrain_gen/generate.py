@@ -38,6 +38,10 @@ def generate_world(cfg: TerrainConfig, output_dir: Path, start_paused: bool = Tr
         build_world_sdf(
             cfg, heightmap_png, texture_pngs, rocks, rock_mesh_dir, terrain_collision_sdf,
             heightmap_z_min=heightmap_z_min, heightmap_z_span=heightmap_z_span,
+            # Lets the opening GUI camera be placed relative to the real ground height
+            # under it, instead of at a hardcoded absolute z that assumes one seed's
+            # terrain elevation (see worldgen._gui_camera_pose).
+            elevation_lookup=elevation_lookup,
             start_paused=start_paused,
         )
     )

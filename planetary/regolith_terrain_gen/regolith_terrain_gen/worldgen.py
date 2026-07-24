@@ -130,6 +130,53 @@ def _rock_model_sdf(rock: RockInstance, index: int, mesh_dir: Path) -> str:
 """
 
 
+# Opening GUI viewpoint, expressed RELATIVE to the spawn point rather than as an
+# absolute pose: back off this far along -x/-y and sit this high above the ground.
+# Sized so the 0.4 m rover is unmistakable the moment the window opens - at ~7 m it
+# spans ~60 px in a 1200 px-wide window. Two earlier absolute poses were both too far
+# out to see it at all: "-110 -110 35" (~155 m, rover 2-3 px, reported as "Gazebo
+# shows nothing but terrain") and then "-22 -22 13" (~32 m, rover ~13 px, still
+# reported as not showing the rover - measured directly off a GUI screenshot).
+_CAM_BACK_M = 4.5
+_CAM_HEIGHT_M = 3.0
+# Aim at the chassis rather than its contact patch, so the rover sits just above the
+# frame centre instead of on the horizon line.
+_CAM_TARGET_HEIGHT_M = 0.17
+
+
+def _gui_camera_pose(cfg: TerrainConfig, elevation_lookup=None) -> str:
+    """Opening GUI camera pose, placed relative to the actual terrain height at the
+    spawn point.
+
+    The pose used to be a hardcoded absolute string, which silently assumed a terrain
+    elevation: spawn elevation is seed-dependent (5.2 m for seed 42, 6.1 m for seed 7,
+    and the fBm range is 10 m), so a fixed z is a different height above the ground for
+    every seed - and at these much closer camera distances that error is no longer
+    cosmetic. It is also sampled at the CAMERA's own (x, y), not just the spawn point:
+    a camera placed a fixed height above the spawn elevation can end up underground if
+    the terrain rises behind the rover (that exact mistake - camera at z=2.5 against
+    ~5.2 m local terrain, rendering the underside of the terrain - cost time during the
+    investigation in PROGRESS.md).
+
+    Both camera and target sit inside the spawn zone, which place_craters and
+    scatter_rocks both keep clear, so nothing can occlude the opening shot.
+    """
+    sx, sy = cfg.spawn_zone_center
+    cam_x, cam_y = sx - _CAM_BACK_M, sy - _CAM_BACK_M
+
+    if elevation_lookup is None:
+        spawn_ground = camera_ground = 0.0
+    else:
+        spawn_ground = elevation_lookup(sx, sy)
+        camera_ground = elevation_lookup(cam_x, cam_y)
+
+    cam_z = max(spawn_ground, camera_ground) + _CAM_HEIGHT_M
+    horizontal = float(np.hypot(sx - cam_x, sy - cam_y))
+    pitch = float(np.arctan2(cam_z - (spawn_ground + _CAM_TARGET_HEIGHT_M), horizontal))
+    yaw = float(np.arctan2(sy - cam_y, sx - cam_x))
+    return f"{cam_x:.3f} {cam_y:.3f} {cam_z:.3f} 0 {pitch:.3f} {yaw:.3f}"
+
+
 def build_world_sdf(
     cfg: TerrainConfig,
     heightmap_png: Path,
@@ -139,6 +186,7 @@ def build_world_sdf(
     terrain_collision_sdf: str,
     heightmap_z_min: float = 0.0,
     heightmap_z_span: float = None,
+    elevation_lookup=None,
     start_paused: bool = True,
 ) -> str:
     # gz stretches the heightmap PNG's own pixel min/max to fill <size> z, rendering the
@@ -150,15 +198,7 @@ def build_world_sdf(
     if heightmap_z_span is None:
         heightmap_z_span = cfg.height_range_m
     dx, dy, dz = _sun_direction(cfg.sun_elevation_deg, cfg.sun_azimuth_deg)
-    # Elevated oblique viewpoint close to the spawn zone, looking down across it so
-    # the low-sun long shadows are visible without losing the rover in the distance.
-    # Previously "-110 -110 35 0 0.28 0.78" (~155 m from the origin, a nice wide
-    # establishing shot of the whole crater field) - but at that range the ~0.4 m
-    # rover projects to only 2-3 px, indistinguishable from noise/shadow on launch
-    # (reported as "Gazebo shows nothing but terrain" - confirmed by direct
-    # screenshot comparison against this same pose moved to ~28 m out, where the
-    # sunlit rover is clearly visible; see PROGRESS.md).
-    camera_pose = "-22 -22 13 0 0.3 0.78"
+    camera_pose = _gui_camera_pose(cfg, elevation_lookup)
 
     rock_models = "\n".join(_rock_model_sdf(rock, i, rock_mesh_dir) for i, rock in enumerate(rocks))
 
