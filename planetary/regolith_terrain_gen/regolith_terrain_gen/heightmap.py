@@ -13,8 +13,30 @@ from regolith_terrain_gen.noise import fbm
 
 
 def build_heightmap(cfg: TerrainConfig, rng: np.random.Generator) -> tuple:
-    """Returns (heightmap_meters, craters, elevation_lookup) where elevation_lookup(x_m, y_m)
-    samples terrain height in meters at a world-frame coordinate."""
+    """Returns (raw_heightmap, visual_heightmap, craters, elevation_lookup).
+
+    raw_heightmap is the full fine-resolution fBm + regional-slope + crater terrain -
+    kept around only so build_terrain_collision_boxes_sdf can re-derive the smoothed
+    collision surface from it (collision geometry is a deterministic function of this
+    array plus cfg).
+
+    visual_heightmap is what actually gets rendered and looked up: the SAME smoothed,
+    tilted-slab surface the collision boxes physically are, evaluated at full
+    resolution (see _synthesize_visual_heightmap). Previously this function returned
+    raw_heightmap for both rendering and lookups, which meant the rendered ground and
+    the ground the rover's physics actually rested on were two different surfaces -
+    diverging by more than the 0.09 m wheel radius across most of the spawn zone for
+    several seeds (seed 42: mean +0.15 m, up to +0.35 m, 80% of the spawn zone exceeding
+    the wheel radius) - the rover wasn't broken, it was just resting on an invisible
+    surface below the one being drawn, so it visually rendered as sunk into the ground.
+    Building visual_heightmap from the identical collision surface makes the gap zero
+    by construction, for every seed.
+
+    elevation_lookup(x_m, y_m) intentionally samples visual_heightmap, not
+    raw_heightmap: rock placement (scatter.py) and the spawn-point manifest elevation
+    both need the surface the rover/rocks actually sit on, or they'd reintroduce this
+    exact float/embed mismatch themselves.
+    """
     n = cfg.heightmap_resolution_px
     px_per_m = (n - 1) / cfg.world_size_m
 
@@ -46,19 +68,61 @@ def build_heightmap(cfg: TerrainConfig, rng: np.random.Generator) -> tuple:
     if span > 1e-9:
         heightmap *= cfg.height_range_m / span
 
+    grid = _build_smoothed_surface(heightmap, cfg)
+    visual_heightmap = np.clip(
+        _synthesize_visual_heightmap(heightmap, cfg, grid), 0.0, cfg.height_range_m
+    )
+
     def elevation_lookup(x_m: float, y_m: float) -> float:
         px = int(np.clip((x_m + half_world) * px_per_m, 0, n - 1))
         py = int(np.clip((y_m + half_world) * px_per_m, 0, n - 1))
-        return float(heightmap[py, px])
+        return float(visual_heightmap[py, px])
 
-    return heightmap, craters, elevation_lookup
+    return heightmap, visual_heightmap, craters, elevation_lookup
 
 
-def save_heightmap_png(heightmap: np.ndarray, path: Path) -> None:
-    """Save as a 16-bit grayscale PNG, the format Gazebo's heightmap geometry expects."""
-    normalized = heightmap / heightmap.max() if heightmap.max() > 0 else heightmap
+def save_heightmap_png(heightmap: np.ndarray, path: Path) -> tuple:
+    """Save as a 16-bit grayscale PNG and return (z_min_m, z_span_m), the vertical
+    offset and range worldgen.py must feed into the <heightmap> element's <pos> z and
+    <size> z so that gz renders this array back at its true absolute elevations.
+
+    CRITICAL - gz normalizes the heightmap image by its OWN min/max, not linearly.
+    gz-sim's ogre2 heightmap stretches whatever pixel range the PNG actually contains
+    to fill [0, <size> z] (its lowest pixel renders at <pos> z, its highest at
+    <pos> z + <size> z). It does NOT map pixel/65535 -> height*<size>z linearly. So the
+    ONLY way to control the absolute rendered elevation is to (a) let the PNG use the
+    full 0..65535 range and (b) tell gz, via <pos> z and <size> z, what real-world
+    min and span that full range corresponds to. Then:
+
+        rendered(x,y) = pos_z + (pixel-min)/(max-min) * size_z
+                      = z_min + (H - z_min)/(z_max - z_min) * (z_max - z_min)
+                      = H(x,y)                                     (exact, every pixel)
+
+    A PREVIOUS fix did the opposite - it deliberately encoded only a PARTIAL range
+    (heightmap/height_range_m, peaking well below 1.0) on the assumption gz maps pixels
+    linearly, so that partial range would land at the right absolute heights. Because gz
+    actually min/max-stretches, that partial-range PNG got stretched back up: the rendered
+    ground floated ~0.2-0.5 m ABOVE the collision boxes (which are built from these same
+    absolute metres), so the rover, correctly resting on the collision surface, rendered
+    sunk into / under the visibly-drawn ground. See PROGRESS.md "The rover is STILL
+    underground - gz heightmap min/max normalization".
+
+    Collision geometry and elevation_lookup keep using the absolute-metre surface
+    unchanged; only the PNG encoding + the <pos>/<size> z that decode it change, so the
+    two surfaces now coincide by construction for every seed."""
+    z_min = float(heightmap.min())
+    z_max = float(heightmap.max())
+    span = z_max - z_min
+    if span > 1e-9:
+        normalized = (heightmap - z_min) / span
+    else:
+        # Perfectly flat terrain: any constant renders flat; hand back a unit span so
+        # worldgen's <size> z stays positive and <pos> z carries the constant height.
+        normalized = np.zeros_like(heightmap)
+        span = 1.0
     as_uint16 = (np.clip(normalized, 0.0, 1.0) * 65535).astype(np.uint16)
     Image.fromarray(as_uint16, mode="I;16").save(path)
+    return z_min, span
 
 
 def _smooth_surface(averaged: np.ndarray, passes: int) -> np.ndarray:
@@ -84,13 +148,88 @@ def _smooth_surface(averaged: np.ndarray, passes: int) -> np.ndarray:
     return a
 
 
-def build_terrain_collision_boxes_sdf(
-    heightmap: np.ndarray,
-    cfg: TerrainConfig,
-    grid_resolution: int = 24,
-    overlap_frac: float = 0.12,
-    smoothing_passes: int = 3,
-) -> str:
+def _build_smoothed_surface(heightmap: np.ndarray, cfg: TerrainConfig) -> dict:
+    """The coarse, blurred, per-cell tangent-plane model of the terrain that
+    build_terrain_collision_boxes_sdf turns into physics boxes AND
+    _synthesize_visual_heightmap turns into the rendered ground - factored out
+    so both can never drift out of sync with each other. See
+    build_terrain_collision_boxes_sdf's docstring for why each step (block
+    averaging, blurring, per-cell tilt) exists.
+
+    cfg.collision_grid_resolution/collision_overlap_frac/collision_smoothing_passes
+    were previously separate keyword defaults on build_terrain_collision_boxes_sdf;
+    moved onto TerrainConfig so this helper and the box-emitting/visual-synthesis
+    callers are structurally guaranteed to use the same values.
+    """
+    n = heightmap.shape[0]
+    grid_resolution = cfg.collision_grid_resolution
+    block = max(1, (n - 1) // grid_resolution)
+    usable = ((n - 1) // block) * block  # crop to a multiple of block for clean reshaping
+    trimmed = heightmap[:usable, :usable]
+    rows_blocks, cols_blocks = usable // block, usable // block
+    averaged = trimmed.reshape(rows_blocks, block, cols_blocks, block).mean(axis=(1, 3))
+    # Blur the cell-average heights so adjacent tilted slabs meet at their shared
+    # edge (removes the curvature "lip" - see the SMOOTHING note on
+    # build_terrain_collision_boxes_sdf).
+    surface = _smooth_surface(averaged, cfg.collision_smoothing_passes)
+
+    half_world = cfg.world_size_m / 2.0
+    cell_size_m = cfg.world_size_m * (usable / (n - 1)) / rows_blocks
+    xs = -half_world + (np.arange(cols_blocks) + 0.5) * cell_size_m
+    ys = -half_world + (np.arange(rows_blocks) + 0.5) * cell_size_m
+
+    # Local surface gradient (metres of height per metre), from central
+    # differences of the SMOOTHED cell heights. axis=1 runs along +x (columns),
+    # axis=0 along +y (rows). np.gradient uses one-sided differences at edges.
+    grad_x = np.gradient(surface, cell_size_m, axis=1)
+    grad_y = np.gradient(surface, cell_size_m, axis=0)
+
+    return {
+        "block": block,
+        "usable": usable,
+        "rows_blocks": rows_blocks,
+        "cols_blocks": cols_blocks,
+        "cell_size_m": cell_size_m,
+        "half_world": half_world,
+        "xs": xs,
+        "ys": ys,
+        "surface": surface,
+        "grad_x": grad_x,
+        "grad_y": grad_y,
+    }
+
+
+def _synthesize_visual_heightmap(heightmap: np.ndarray, cfg: TerrainConfig, grid: dict) -> np.ndarray:
+    """Evaluate the SAME tilted collision plane build_terrain_collision_boxes_sdf turns
+    into physics boxes, at every full-resolution heightmap pixel - so the rendered
+    <heightmap> visual is, cell by cell, the exact surface the rover physically stands
+    on (see the mismatch note in build_heightmap). Pixels beyond the cropped ``usable``
+    region (a <3 m strip at the +x/+y edge lost to the block-size crop, see
+    _build_smoothed_surface) are clamped to their nearest valid cell's plane - that
+    strip has no collision coverage at all regardless, a pre-existing edge condition
+    well outside the ~9 m spawn zone the rover actually operates in.
+    """
+    n = heightmap.shape[0]
+    px_per_m = (n - 1) / cfg.world_size_m
+    rows_blocks, cols_blocks, block = grid["rows_blocks"], grid["cols_blocks"], grid["block"]
+    half_world, xs, ys = grid["half_world"], grid["xs"], grid["ys"]
+    surface, grad_x, grad_y = grid["surface"], grid["grad_x"], grid["grad_y"]
+
+    row_idx = np.clip(np.arange(n) // block, 0, rows_blocks - 1)
+    col_idx = np.clip(np.arange(n) // block, 0, cols_blocks - 1)
+
+    h0 = surface[row_idx[:, None], col_idx[None, :]]
+    gx = grad_x[row_idx[:, None], col_idx[None, :]]
+    gy = grad_y[row_idx[:, None], col_idx[None, :]]
+
+    coord = -half_world + np.arange(n) / px_per_m
+    dx = np.broadcast_to((coord - xs[col_idx])[None, :], (n, n))
+    dy = np.broadcast_to((coord - ys[row_idx])[:, None], (n, n))
+
+    return h0 + gx * dx + gy * dy
+
+
+def build_terrain_collision_boxes_sdf(heightmap: np.ndarray, cfg: TerrainConfig) -> str:
     """Box collision(s) approximating the terrain - <collision> elements to
     embed in the SAME model/link as the visual <heightmap> (see worldgen.py).
 
@@ -144,8 +283,9 @@ def build_terrain_collision_boxes_sdf(
     trade-off recorded under M4 came from box COUNT, and smoothing adds none).
     The blur shifts the collision surface by at most ~1.5 m only at the
     sharpest crater rims (which the planner marks lethal and routes around
-    anyway) and <0.15 m on average; spawn clearance is preserved (spawn Z comes
-    from the fine heightmap via manifest, not from this smoothed grid).
+    anyway) and <0.15 m on average relative to the pre-blur block average - see
+    the VISUAL/COLLISION MATCH note below for why that shift is no longer a
+    concern for spawn clearance or anything else that reads elevation_lookup.
 
     Each grid cell's centre height is the AVERAGE (not a single strided
     sample) of the full-resolution heightmap over that cell's footprint;
@@ -173,29 +313,21 @@ def build_terrain_collision_boxes_sdf(
     default 24 is now genuinely smooth enough to drive rather than a
     reluctant compromise: finer grids help the residual lip only marginally
     for a large RTF cost.
+
+    VISUAL/COLLISION MATCH: the rendered <heightmap> visual (worldgen.py) is no
+    longer the raw fine heightmap - it's _synthesize_visual_heightmap evaluating
+    this SAME surface/grad_x/grad_y at full resolution (see build_heightmap), so
+    the "spawn clearance"/"<0.15 m on average" mismatch this docstring used to
+    describe as an accepted trade-off no longer exists: the ground you see and
+    the ground the rover stands on are now the identical surface, by construction,
+    for every seed.
     """
-    n = heightmap.shape[0]
-    block = max(1, (n - 1) // grid_resolution)
-    usable = ((n - 1) // block) * block  # crop to a multiple of block for clean reshaping
-    trimmed = heightmap[:usable, :usable]
-    rows_blocks, cols_blocks = usable // block, usable // block
-    averaged = trimmed.reshape(rows_blocks, block, cols_blocks, block).mean(axis=(1, 3))
-    # Blur the cell-average heights so adjacent tilted slabs meet at their shared
-    # edge (removes the curvature "lip" - see the SMOOTHING note above).
-    surface = _smooth_surface(averaged, smoothing_passes)
+    grid = _build_smoothed_surface(heightmap, cfg)
+    rows_blocks, cols_blocks = grid["rows_blocks"], grid["cols_blocks"]
+    cell_size_m, xs, ys = grid["cell_size_m"], grid["xs"], grid["ys"]
+    surface, grad_x, grad_y = grid["surface"], grid["grad_x"], grid["grad_y"]
 
-    half_world = cfg.world_size_m / 2.0
-    cell_size_m = cfg.world_size_m * (usable / (n - 1)) / rows_blocks
-    xs = -half_world + (np.arange(cols_blocks) + 0.5) * cell_size_m
-    ys = -half_world + (np.arange(rows_blocks) + 0.5) * cell_size_m
-
-    # Local surface gradient (metres of height per metre), from central
-    # differences of the SMOOTHED cell heights. axis=1 runs along +x (columns),
-    # axis=0 along +y (rows). np.gradient uses one-sided differences at edges.
-    grad_x = np.gradient(surface, cell_size_m, axis=1)
-    grad_y = np.gradient(surface, cell_size_m, axis=0)
-
-    slab_size_m = cell_size_m * (1.0 + overlap_frac)  # widen so neighbours overlap (no cracks)
+    slab_size_m = cell_size_m * (1.0 + cfg.collision_overlap_frac)  # widen so neighbours overlap (no cracks)
     collisions = []
     for row in range(rows_blocks):
         for col in range(cols_blocks):

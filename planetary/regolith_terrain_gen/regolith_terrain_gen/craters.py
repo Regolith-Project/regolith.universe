@@ -49,7 +49,14 @@ def place_craters(cfg: TerrainConfig, rng: np.random.Generator) -> list:
     craters = []
     for diameter in diameters:
         radius = diameter / 2.0
-        keep_out = cfg.spawn_zone_radius_m + radius
+        # apply_craters actually sculpts out to 1.6x radius (the rim gaussian's tail -
+        # see crater_radial_profile/apply_craters' reach_m), not just the bowl radius.
+        # Excluding only `radius` here let a big crater's raised rim - not just its
+        # bowl - poke into the "guaranteed clear" spawn zone as long as its CENTER
+        # cleared the (smaller) bowl-only keep_out. No offending craters were found for
+        # the current default seed, but the exclusion math itself was wrong for any
+        # seed placing a crater in that gap.
+        keep_out = cfg.spawn_zone_radius_m + radius * 1.6
         for _ in range(50):
             x = rng.uniform(-half_world + radius, half_world - radius)
             y = rng.uniform(-half_world + radius, half_world - radius)

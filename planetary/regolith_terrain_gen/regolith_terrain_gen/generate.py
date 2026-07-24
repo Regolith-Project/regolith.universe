@@ -19,10 +19,13 @@ def generate_world(cfg: TerrainConfig, output_dir: Path, start_paused: bool = Tr
     output_dir.mkdir(parents=True, exist_ok=True)
     rng = np.random.default_rng(cfg.seed)
 
-    heightmap, craters, elevation_lookup = build_heightmap(cfg, rng)
+    raw_heightmap, heightmap, craters, elevation_lookup = build_heightmap(cfg, rng)
     heightmap_png = output_dir / "heightmap.png"
-    save_heightmap_png(heightmap, heightmap_png)
-    terrain_collision_sdf = build_terrain_collision_boxes_sdf(heightmap, cfg)
+    # gz min/max-stretches the PNG to fill <size> z; save_heightmap_png hands back the
+    # real-world (min, span) that full range maps to so worldgen can pin <pos>/<size> z
+    # and the rendered ground lands exactly on the collision surface (see heightmap.py).
+    heightmap_z_min, heightmap_z_span = save_heightmap_png(heightmap, heightmap_png)
+    terrain_collision_sdf = build_terrain_collision_boxes_sdf(raw_heightmap, cfg)
 
     texture_pngs = generate_textures(output_dir / "textures", cfg.texture_resolution_px, rng)
 
@@ -33,7 +36,9 @@ def generate_world(cfg: TerrainConfig, output_dir: Path, start_paused: bool = Tr
     world_sdf_path = output_dir / "world.sdf"
     world_sdf_path.write_text(
         build_world_sdf(
-            cfg, heightmap_png, texture_pngs, rocks, rock_mesh_dir, terrain_collision_sdf, start_paused=start_paused
+            cfg, heightmap_png, texture_pngs, rocks, rock_mesh_dir, terrain_collision_sdf,
+            heightmap_z_min=heightmap_z_min, heightmap_z_span=heightmap_z_span,
+            start_paused=start_paused,
         )
     )
 

@@ -137,12 +137,28 @@ def build_world_sdf(
     rocks: list,
     rock_mesh_dir: Path,
     terrain_collision_sdf: str,
+    heightmap_z_min: float = 0.0,
+    heightmap_z_span: float = None,
     start_paused: bool = True,
 ) -> str:
+    # gz stretches the heightmap PNG's own pixel min/max to fill <size> z, rendering the
+    # lowest pixel at <pos> z and the highest at <pos> z + <size> z. save_heightmap_png
+    # emits a full-range PNG and reports the real-world (min, span) it corresponds to;
+    # feeding those straight into <pos> z / <size> z makes gz reproduce the true absolute
+    # elevations, so the drawn ground coincides with the collision boxes. Falls back to
+    # the old fixed [0, height_range_m] framing only if a caller omits them.
+    if heightmap_z_span is None:
+        heightmap_z_span = cfg.height_range_m
     dx, dy, dz = _sun_direction(cfg.sun_elevation_deg, cfg.sun_azimuth_deg)
-    # Elevated oblique viewpoint well outside the crater field, looking down across it
-    # so both the crater field and the low-sun long shadows are visible at once.
-    camera_pose = "-110 -110 35 0 0.28 0.78"
+    # Elevated oblique viewpoint close to the spawn zone, looking down across it so
+    # the low-sun long shadows are visible without losing the rover in the distance.
+    # Previously "-110 -110 35 0 0.28 0.78" (~155 m from the origin, a nice wide
+    # establishing shot of the whole crater field) - but at that range the ~0.4 m
+    # rover projects to only 2-3 px, indistinguishable from noise/shadow on launch
+    # (reported as "Gazebo shows nothing but terrain" - confirmed by direct
+    # screenshot comparison against this same pose moved to ~28 m out, where the
+    # sunlit rover is clearly visible; see PROGRESS.md).
+    camera_pose = "-22 -22 13 0 0.3 0.78"
 
     rock_models = "\n".join(_rock_model_sdf(rock, i, rock_mesh_dir) for i, rock in enumerate(rocks))
 
@@ -194,8 +210,8 @@ def build_world_sdf(
           <geometry>
             <heightmap>
               <uri>file://{heightmap_png}</uri>
-              <size>{cfg.world_size_m} {cfg.world_size_m} {cfg.height_range_m}</size>
-              <pos>0 0 0</pos>
+              <size>{cfg.world_size_m} {cfg.world_size_m} {heightmap_z_span:.6f}</size>
+              <pos>0 0 {heightmap_z_min:.6f}</pos>
               <texture>
                 <diffuse>file://{texture_pngs['albedo']}</diffuse>
                 <normal>file://{texture_pngs['normal']}</normal>

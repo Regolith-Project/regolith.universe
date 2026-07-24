@@ -47,6 +47,16 @@ class TerrainConfig:
     spawn_zone_radius_m: float = 9.0
     spawn_zone_center: tuple = (0.0, 0.0)
 
+    # Collision-box approximation of the terrain (see heightmap.py's
+    # build_terrain_collision_boxes_sdf) - also drives the synthesized visual
+    # heightmap (build_heightmap), so the rendered ground and the physics ground
+    # are the same surface. Kept on cfg rather than as separate keyword defaults
+    # on each function so the collision-box builder and the visual synthesizer
+    # can never drift out of sync with each other.
+    collision_grid_resolution: int = 24
+    collision_overlap_frac: float = 0.12
+    collision_smoothing_passes: int = 3
+
     # Rocks
     rock_count: int = 190
     rock_variant_count: int = 4

@@ -19,17 +19,16 @@ import atexit
 import fcntl
 import os
 import random
+import subprocess
 from pathlib import Path
 
 from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
-    ExecuteProcess,
     IncludeLaunchDescription,
     OpaqueFunction,
     RegisterEventHandler,
     Shutdown,
-    TimerAction,
 )
 from launch.conditions import IfCondition
 from launch.event_handlers import OnProcessExit
@@ -155,6 +154,50 @@ def _allocate_domain_id() -> int:
         os.close(registry_lock_fd)
 
 
+def _bake_rover_model_sdf(rover_urdf_path: Path, spawn_z: float) -> str:
+    """Convert the rover URDF into an SDF <model> block, renamed to ROVER_NAME and
+    posed at its spawn point, ready to splice directly into the generated world.sdf
+    (the same file rocks/terrain are already baked into - see worldgen.py).
+
+    This makes the rover part of the world from the moment gz-sim loads it, instead
+    of being added ~3s later via a separate `ros2 run ros_gz_sim create` service
+    call - one less moving part, and the generated world.sdf is now fully
+    self-contained (no runtime spawn dependency). Note: an earlier version of this
+    docstring claimed this fixes a GUI scene-sync bug where an already-open GUI
+    window never renders entities added after it starts; that theory did not
+    survive re-testing (the rover still wasn't visibly rendering after this change)
+    and was wrong - see PROGRESS.md's "Gazebo shows nothing but terrain" section for
+    the real root cause (the default camera was ~155m from spawn) and its fix (in
+    worldgen.py's build_world_sdf). This function is kept because baking the rover
+    in is still a reasonable simplification on its own, not because it fixes that
+    bug.
+    """
+    converted = subprocess.run(
+        ["gz", "sdf", "-p", str(rover_urdf_path)],
+        capture_output=True, text=True, check=True,
+    ).stdout
+    # gz sdf -p wraps its output in an <sdf version='...'> root element; strip that
+    # down to the bare <model>...</model>, since we're splicing this directly inside
+    # world.sdf's own <world> element (nesting a second <sdf> in there is invalid -
+    # gz-sim logs "not defined in SDF" and silently ignores the whole block).
+    start = converted.index("<model ")
+    end = converted.rindex("</model>") + len("</model>")
+    model_sdf = converted[start:end]
+    # xacro's <robot name="regolith_rover"> becomes the SDF model's name; rename it to
+    # ROVER_NAME to match the bridge/flip-recovery topic remappings below, and give it
+    # a spawn pose (gz sdf -p emits none, since a bare URDF has no world placement).
+    marker = "<model name='regolith_rover'>"
+    if not model_sdf.startswith(marker):
+        raise RuntimeError(
+            "gz sdf -p produced unexpected output - couldn't find the "
+            f"'regolith_rover' model tag to rename/pose:\n{model_sdf[:500]}"
+        )
+    return (
+        f"<model name='{ROVER_NAME}'>\n    <pose>0 0 {spawn_z} 0 0 0</pose>"
+        + model_sdf[len(marker):]
+    )
+
+
 def _generate_and_launch(context, *args, **kwargs):
     import json
 
@@ -165,13 +208,13 @@ def _generate_and_launch(context, *args, **kwargs):
 
     # Claim a private ROS_DOMAIN_ID *first*, before any of the actions returned
     # below are built or spawned. Mutating os.environ here (inside the running
-    # OpaqueFunction) means every subsequently-spawned process - the Nodes and
-    # ExecuteProcesses returned at the bottom of this function AND the ones inside
-    # the included ros_gz_sim/gz_sim.launch.py - captures the new value at spawn
-    # time, so the whole launch tree shares one DDS domain isolated from any other
-    # launch. This makes the overnight-freeze failure mode (two launches merging
-    # into one ROS graph over shared topic names) structurally impossible between
-    # any two launches that each get a distinct id. See PROGRESS.md.
+    # OpaqueFunction) means every subsequently-spawned process - the Nodes returned
+    # at the bottom of this function AND the ones inside the included
+    # ros_gz_sim/gz_sim.launch.py - captures the new value at spawn time, so the
+    # whole launch tree shares one DDS domain isolated from any other launch. This
+    # makes the overnight-freeze failure mode (two launches merging into one ROS
+    # graph over shared topic names) structurally impossible between any two
+    # launches that each get a distinct id. See PROGRESS.md.
     domain_id = _allocate_domain_id()
     print(
         f"[hello_moon.launch] Using ROS_DOMAIN_ID={domain_id} "
@@ -208,6 +251,17 @@ def _generate_and_launch(context, *args, **kwargs):
     rover_urdf_path = output_dir / "rover.urdf"
     rover_urdf_path.write_text(urdf_xml)
 
+    # Bake the rover into world.sdf at its spawn pose, alongside the rocks/terrain
+    # already there - see _bake_rover_model_sdf's docstring for why. Must happen
+    # before gz_sim (below) is actually started; IncludeLaunchDescription only holds
+    # world_sdf_path as a string here, so rewriting the file now is safe - gz-sim
+    # itself doesn't read it until the launch tree executes, after this function
+    # returns.
+    rover_model_sdf = _bake_rover_model_sdf(rover_urdf_path, spawn_z)
+    world_sdf_path.write_text(
+        world_sdf_path.read_text().replace("</world>", f"{rover_model_sdf}\n  </world>", 1)
+    )
+
     headless = LaunchConfiguration("headless").perform(context)
     gz_flags = "-r -s" if headless.lower() == "true" else "-r"
     gz_sim = IncludeLaunchDescription(
@@ -222,24 +276,6 @@ def _generate_and_launch(context, *args, **kwargs):
         executable="robot_state_publisher",
         output="screen",
         parameters=[{"robot_description": urdf_xml, "use_sim_time": True}],
-    )
-
-    # A short delay gives Gazebo a moment to finish starting up before the spawn
-    # service call arrives.
-    spawn_rover = TimerAction(
-        period=3.0,
-        actions=[
-            ExecuteProcess(
-                cmd=[
-                    "ros2", "run", "ros_gz_sim", "create",
-                    "-world", WORLD_NAME,
-                    "-file", str(rover_urdf_path),
-                    "-name", ROVER_NAME,
-                    "-x", "0", "-y", "0", "-z", str(spawn_z),
-                ],
-                output="screen",
-            )
-        ],
     )
 
     bridge = Node(
@@ -352,8 +388,6 @@ def _generate_and_launch(context, *args, **kwargs):
     # exactly what caused the overnight freeze investigated in PROGRESS.md:
     # `parameter_bridge` died, nothing tore the rest down, and a second launch
     # 8 minutes later collided with the survivors for the next 9 hours).
-    # `spawn_rover` is deliberately excluded - it's a one-shot process that is
-    # *supposed* to exit once the rover is spawned.
     shutdown_on_unexpected_exit = [
         RegisterEventHandler(
             OnProcessExit(
@@ -380,7 +414,6 @@ def _generate_and_launch(context, *args, **kwargs):
     return [
         gz_sim,
         robot_state_publisher,
-        spawn_rover,
         bridge,
         sensor_covariance_relay,
         ekf_node,
