@@ -19,6 +19,26 @@ from rclpy.qos import QoSDurabilityPolicy, QoSProfile
 from scipy import ndimage
 
 
+def load_heightmap(manifest: dict) -> np.ndarray:
+    """Decodes the terrain heightmap PNG into this module's [row = y, col = x] array.
+
+    The `.T` is not cosmetic. The PNG is written in gz's axis order - its first image
+    axis is world X - because that is what gz's <heightmap> requires (see
+    regolith_terrain_gen's heightmap.save_heightmap_png, and the orientation regression
+    test beside it). Everything on this side, including the rock stamping below and the
+    planner's _world_to_grid, indexes [row = y, col = x]. Reading the file without the
+    transpose mirrors the entire slope field about the x = y diagonal while the rocks -
+    which come from the manifest's real x/y - stay put, so the planner routes around
+    steep ground that isn't there and straight into ground that is. Measured on seed 42
+    at the parameters hello_moon.launch.py uses (1.0 m, 0.3 m, 20 deg): 1.73% of cells
+    get the wrong lethal verdict, and the total lethal fraction is unchanged (a
+    transpose preserves the histogram), which is exactly why it is invisible in any
+    summary statistic. See PROGRESS.md "Rendered terrain was transposed".
+    """
+    pixels = np.array(Image.open(manifest["heightmap_png"])).astype(np.float64).T
+    return pixels / pixels.max() * manifest["height_range_m"]
+
+
 def build_costmap(
     manifest: dict,
     heightmap: np.ndarray,
@@ -54,7 +74,12 @@ def build_costmap(
     for rock in manifest["rocks"]:
         row = int((rock["y_m"] + half_world) / actual_resolution_m)
         col = int((rock["x_m"] + half_world) / actual_resolution_m)
-        radius_cells = max(1, int(round(rock["scale_m"] / actual_resolution_m)))
+        # Prefer the rock's real horizontal collision footprint over scale_m, which is
+        # the mesh BOUNDING radius and overstates these anisotropic boulders' thin axes.
+        # Older manifests (pre-ellipsoid-collision) have no radii, so fall back.
+        radii = rock.get("collision_radii_m")
+        footprint_m = max(radii[0], radii[1]) if radii else rock["scale_m"]
+        radius_cells = max(1, int(round(footprint_m / actual_resolution_m)))
         r0, r1 = max(0, row - radius_cells), min(rows, row + radius_cells + 1)
         c0, c1 = max(0, col - radius_cells), min(cols, col + radius_cells + 1)
         lethal[r0:r1, c0:c1] = True
@@ -91,8 +116,7 @@ class CostmapNode(Node):
         manifest_path = Path(self.get_parameter("manifest_path").value)
         try:
             manifest = json.loads(manifest_path.read_text())
-            heightmap = np.array(Image.open(manifest["heightmap_png"])).astype(np.float64)
-            heightmap = heightmap / heightmap.max() * manifest["height_range_m"]
+            heightmap = load_heightmap(manifest)
         except (OSError, KeyError, ValueError) as error:
             self.get_logger().error(
                 f"Failed to load terrain manifest '{manifest_path}': {error!r}. The "
