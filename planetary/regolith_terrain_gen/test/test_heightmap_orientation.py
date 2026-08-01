@@ -86,14 +86,17 @@ def test_rendered_surface_matches_elevation_lookup(tmp_path):
     ppm = (n - 1) / cfg.world_size_m
     half = cfg.world_size_m / 2.0
 
+    # Sample at exact heightmap POSTS. elevation_lookup interpolates bilinearly between
+    # posts (as gz does when it draws the surface), and this test is about the encoding -
+    # orientation, full-range stretch, z mapping - not about interpolation, so comparing
+    # at posts isolates the thing under test: on a post, bilinear reduces to the post's
+    # own value and any difference left is the encoding.
     worst = 0.0
     rng2 = np.random.default_rng(0)
     for _ in range(400):
-        x, y = rng2.uniform(-half + 1, half - 1, size=2)
-        # Index exactly as elevation_lookup does (int() truncation, not rounding), so
-        # this compares the two surfaces and not two different sampling rules.
-        i = int(np.clip((x + half) * ppm, 0, n - 1))
-        j = int(np.clip((y + half) * ppm, 0, n - 1))
+        i, j = rng2.integers(1, n - 1, size=2)
+        x = i / ppm - half
+        y = j / ppm - half
         worst = max(worst, abs(float(decoded[i, j]) - elevation_lookup(x, y)))
-    # Same pixel, same surface: only 16-bit quantisation should remain.
+    # Same post, same surface: only 16-bit quantisation should remain.
     assert worst < 0.01, f"rendered ground differs from elevation_lookup by up to {worst:.4f} m"

@@ -1,90 +1,31 @@
 # Copyright 2026 Regolith Project contributors
 # SPDX-License-Identifier: Apache-2.0
-"""Regression tests for the "big floating rocks" report (see PROGRESS.md).
+"""Rock COLLISION geometry (see PROGRESS.md).
 
-Two separate defects produced it, and both are locked down here:
+The rocks' <collision> geometry used to be <mesh>, which is silently a no-op in this
+gz-physics install (verified: a probe dropped onto one falls straight through), so the
+boulders were decoration the rover drove through while the costmap planned around them.
+Swapping them for fitted ellipsoids is a correctness fix only - it costs and saves
+essentially nothing.
 
-1. Rocks were placed by sinking the mesh ORIGIN a fixed 0.12 * scale below the ground.
-   Meshes are normalized by their bounding RADIUS, but the anisotropic stretch in
-   displace_rock leaves each variant's lowest vertex 0.51-1.0 units below its origin, so
-   every rock hovered (bottom - 0.12) * scale in the air - up to ~2.1 m under a 2.4 m
-   boulder.
-
-2. The rocks' <collision> geometry was <mesh>, which is silently a no-op in this
-   gz-physics install (verified: a probe dropped onto one falls straight through), so
-   the boulders were decoration the rover drove through. Swapping them for fitted
-   ellipsoids is a correctness fix only - it costs and saves essentially nothing.
+**Whether rocks sit on the ground is NOT tested here any more.** This file used to carry
+a test_no_rock_floats that compared each rock against ``elevation_lookup`` - the same
+function scatter.seat_rock_z seats it with. Two things measured through one convention
+agree however wrong that convention is, so it stayed green while rocks visibly floated,
+twice. It also rebuilt the rock variants with an rng that had not consumed the same
+draws as generate_world, so it graded a set of rocks the shipped world never contained.
+Seating is now checked in test_rock_seating_against_rendered_png.py, against the PNG and
+OBJ files that actually ship.
 """
-
-from pathlib import Path
 
 import numpy as np
 import pytest
 
 from regolith_terrain_gen.config import TerrainConfig
 from regolith_terrain_gen.generate import generate_world
-from regolith_terrain_gen.heightmap import build_heightmap
 from regolith_terrain_gen.rocks import generate_rock_variants
-from regolith_terrain_gen.scatter import _rotation_matrix, scatter_rocks
 
 SEEDS = [42, 123, 7]
-
-
-def _place(cfg: TerrainConfig, mesh_dir: Path):
-    rng = np.random.default_rng(cfg.seed)
-    _, _, _, elevation_lookup = build_heightmap(cfg, rng)
-    variants = generate_rock_variants(mesh_dir, cfg.rock_variant_count, rng, cfg.rock_subdivisions)
-    rocks = scatter_rocks(cfg, rng, variants, elevation_lookup)
-    return rocks, {v.name: v for v in variants}, elevation_lookup
-
-
-def _lowest_clearances(rocks, by_name, elevation_lookup) -> np.ndarray:
-    """For each rock, the gap between its lowest vertex and the ground under that vertex.
-
-    Positive means the rock floats; negative means it is embedded.
-    """
-    out = []
-    for rock in rocks:
-        verts = (by_name[rock.variant].vertices * rock.scale_m) @ _rotation_matrix(
-            rock.roll_rad, rock.pitch_rad, rock.yaw_rad
-        ).T
-        clearance = [
-            rock.z_m + v[2] - elevation_lookup(rock.x_m + v[0], rock.y_m + v[1]) for v in verts
-        ]
-        out.append(min(clearance))
-    return np.array(out)
-
-
-@pytest.mark.parametrize("seed", SEEDS)
-def test_no_rock_floats(tmp_path, seed):
-    cfg = TerrainConfig(seed=seed)
-    rocks, by_name, lookup = _place(cfg, tmp_path / "rocks")
-    clearances = _lowest_clearances(rocks, by_name, lookup)
-
-    assert len(rocks) > 0
-    floating = clearances > 0.0
-    assert not floating.any(), (
-        f"{floating.sum()} of {len(rocks)} rocks float above the terrain "
-        f"(worst gap {clearances.max():.3f} m)"
-    )
-
-
-@pytest.mark.parametrize("seed", SEEDS)
-def test_rocks_are_embedded_but_not_swallowed(tmp_path, seed):
-    """Seated rocks should sit slightly INTO the regolith - not hovering, and not sunk
-    so far that a boulder reads as a pebble."""
-    cfg = TerrainConfig(seed=seed)
-    rocks, by_name, lookup = _place(cfg, tmp_path / "rocks")
-    clearances = _lowest_clearances(rocks, by_name, lookup)
-    scales = np.array([r.scale_m for r in rocks])
-
-    embed_depth = -clearances  # positive = how deep the lowest point is buried
-    assert (embed_depth > 0).all()
-    # Nothing should be buried by more than a third of its own size.
-    assert (embed_depth < 0.34 * scales * 2.0).all(), (
-        f"deepest embed {embed_depth.max():.2f} m against scale "
-        f"{scales[embed_depth.argmax()]:.2f} m"
-    )
 
 
 def test_rock_collision_is_not_a_mesh(tmp_path):
