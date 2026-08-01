@@ -109,7 +109,24 @@ def save_heightmap_png(heightmap: np.ndarray, path: Path) -> tuple:
 
     Collision geometry and elevation_lookup keep using the absolute-metre surface
     unchanged; only the PNG encoding + the <pos>/<size> z that decode it change, so the
-    two surfaces now coincide by construction for every seed."""
+    two surfaces now coincide by construction for every seed.
+
+    CRITICAL, SEPARATELY - gz reads the image TRANSPOSED relative to this array. Every
+    array here is indexed [row = y, col = x], but gz maps the image's first axis to world
+    X and its second to world Y, so handing it the array as-is renders the terrain
+    mirrored about the x = y diagonal. That is a purely HORIZONTAL error, invisible to
+    every check that compares arrays to arrays (the collision boxes, elevation_lookup and
+    the visual array are all built in this module's convention and so all agreed with each
+    other), and invisible on the diagonal itself. It was found by rendering a heightmap
+    with a single 25 m spike at world (+60, 0) and screenshotting from directly overhead:
+    the spike drew at (0, +60). A second spike at (0, -30) drew at (-30, 0). Writing
+    `heightmap.T` puts both back where they belong (measured: (54.7, 6.3) and (-5.2,
+    -26.1), the residual being the offset of a peak's sunlit face from its apex).
+
+    This is what made rocks visibly float: they are seated on elevation_lookup, which
+    matches the COLLISION surface, while the ground being DRAWN was that surface
+    transposed - so a rock sat in the air wherever surface(y, x) < surface(x, y), and
+    sank wherever it was greater. See PROGRESS.md "Rendered terrain was transposed"."""
     z_min = float(heightmap.min())
     z_max = float(heightmap.max())
     span = z_max - z_min
@@ -121,7 +138,9 @@ def save_heightmap_png(heightmap: np.ndarray, path: Path) -> tuple:
         normalized = np.zeros_like(heightmap)
         span = 1.0
     as_uint16 = (np.clip(normalized, 0.0, 1.0) * 65535).astype(np.uint16)
-    Image.fromarray(as_uint16, mode="I;16").save(path)
+    # .T (not a flip/rotation) - gz's image axes are (x, y), this module's are (y, x).
+    # np.ascontiguousarray because PIL needs a contiguous buffer for I;16.
+    Image.fromarray(np.ascontiguousarray(as_uint16.T), mode="I;16").save(path)
     return z_min, span
 
 

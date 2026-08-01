@@ -27,11 +27,13 @@ def generate_world(cfg: TerrainConfig, output_dir: Path, start_paused: bool = Tr
     heightmap_z_min, heightmap_z_span = save_heightmap_png(heightmap, heightmap_png)
     terrain_collision_sdf = build_terrain_collision_boxes_sdf(raw_heightmap, cfg)
 
-    texture_pngs = generate_textures(output_dir / "textures", cfg.texture_resolution_px, rng)
+    texture_pngs = generate_textures(
+        output_dir / "textures", cfg.texture_resolution_px, rng, cfg.texture_tile_size_m
+    )
 
     rock_mesh_dir = output_dir / "rocks"
-    variant_names = generate_rock_variants(rock_mesh_dir, cfg.rock_variant_count, rng, cfg.rock_subdivisions)
-    rocks = scatter_rocks(cfg, rng, variant_names, elevation_lookup)
+    rock_variants = generate_rock_variants(rock_mesh_dir, cfg.rock_variant_count, rng, cfg.rock_subdivisions)
+    rocks = scatter_rocks(cfg, rng, rock_variants, elevation_lookup)
 
     world_sdf_path = output_dir / "world.sdf"
     world_sdf_path.write_text(

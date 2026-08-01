@@ -3,6 +3,7 @@
 """Low-poly procedural rock meshes: an icosphere, subdivided and displaced into an
 irregular boulder, exported as flat-shaded OBJ (no external mesh library needed)."""
 
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -109,12 +110,57 @@ def write_obj(path: Path, vertices: np.ndarray, faces: list, name: str) -> None:
     path.write_text("\n".join(lines) + "\n")
 
 
+@dataclass
+class RockVariant:
+    """A generated rock mesh, plus what placement and collision need from its geometry.
+
+    ``vertices`` (not just the name) is what lets scatter_rocks compute where a rock's
+    actual underside is: normalization above divides by the BOUNDING RADIUS, but
+    displace_rock's anisotropic stretch means a variant's lowest vertex sits anywhere
+    from ~0.51 to 1.0 units below the mesh origin, so no single constant offset can seat
+    every variant on the ground. See scatter.seat_rock_z.
+
+    ``collision_radii`` is the ellipsoid that stands in for the mesh as COLLISION
+    geometry. <mesh> collision silently does nothing in this gz-sim 8 / gz-physics 7.8.0
+    install - the same dartsim limitation heightmap.py records for terrain - which was
+    verified here directly: a probe dropped onto a rock-mesh collision falls straight
+    through it (final z -38.3 m vs 3.1 m for a box control). So the shipped rocks were
+    decoration the rover drove through, while the costmap planned around them.
+    This is purely a correctness fix and buys no speed: measured interleaved in one
+    session at res24, 190 mesh rocks give RTF 0.499 and 190 ellipsoids 0.488, against
+    0.568 with no rock collisions at all - i.e. the rocks cost ~12% either way, and mesh
+    vs ellipsoid is within noise. (An earlier session recorded mesh rocks at 0.134 and
+    concluded they burned ~70% of the budget; that figure does not reproduce and the
+    conclusion drawn from it was wrong.) An ellipsoid is used rather than a sphere because these boulders are
+    deliberately anisotropic; a sphere at the bounding radius would stick out well past
+    the visible rock on its thin axes.
+    """
+
+    name: str
+    vertices: np.ndarray
+    collision_radii: np.ndarray
+
+
+def fit_collision_ellipsoid(vertices: np.ndarray) -> np.ndarray:
+    """Semi-axes of an ellipsoid approximating this rock, in unit-mesh coordinates.
+
+    Per-axis max |component|, i.e. the tight axis-aligned bounding half-extents. For an
+    undisplaced icosphere this is exactly the unit sphere; for the displaced, stretched
+    blobs it hugs the silhouette and sits slightly INSIDE the mesh along diagonals -
+    the direction to err, since a collision shape poking out past the visible rock
+    would stop the rover against thin air.
+    """
+    return np.max(np.abs(vertices), axis=0)
+
+
 def generate_rock_variants(output_dir: Path, count: int, rng: np.random.Generator, subdivisions: int = 1) -> list:
     output_dir.mkdir(parents=True, exist_ok=True)
-    names = []
+    variants = []
     for i in range(count):
         vertices, faces = generate_rock_variant(rng, subdivisions)
         name = f"rock_{i}"
         write_obj(output_dir / f"{name}.obj", vertices, faces, name)
-        names.append(name)
-    return names
+        variants.append(
+            RockVariant(name=name, vertices=vertices, collision_radii=fit_collision_ellipsoid(vertices))
+        )
+    return variants

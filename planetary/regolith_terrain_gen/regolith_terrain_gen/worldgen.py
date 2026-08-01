@@ -95,17 +95,22 @@ def _sun_direction(elevation_deg: float, azimuth_deg: float) -> tuple:
 
 def _rock_model_sdf(rock: RockInstance, index: int, mesh_dir: Path) -> str:
     mesh_uri = f"file://{mesh_dir / (rock.variant + '.obj')}"
+    rx, ry, rz = rock.collision_radii_m
+    # Collision is an ELLIPSOID, not the <mesh> used for the visual: <mesh> collision is
+    # silently a no-op in this gz-physics install (verified - a probe drops straight
+    # through one), so the rover used to drive through every boulder. Correctness only:
+    # the swap costs and saves essentially nothing. See rocks.RockVariant.
     return f"""    <model name="rock_{index}">
       <static>true</static>
-      <pose>{rock.x_m:.3f} {rock.y_m:.3f} {rock.z_m:.3f} 0 0 {rock.yaw_rad:.4f}</pose>
+      <pose>{rock.x_m:.3f} {rock.y_m:.3f} {rock.z_m:.3f} {rock.roll_rad:.4f} {rock.pitch_rad:.4f} {rock.yaw_rad:.4f}</pose>
       <link name="link">
         <collision name="collision">
           <geometry>
-            <mesh>
-              <uri>{mesh_uri}</uri>
-              <scale>{rock.scale_m:.3f} {rock.scale_m:.3f} {rock.scale_m:.3f}</scale>
-            </mesh>
+            <ellipsoid>
+              <radii>{rx:.3f} {ry:.3f} {rz:.3f}</radii>
+            </ellipsoid>
           </geometry>
+          <surface><friction><ode><mu>1.1</mu><mu2>1.1</mu2></ode></friction></surface>
         </collision>
         <visual name="visual">
           <geometry>
@@ -255,7 +260,7 @@ def build_world_sdf(
               <texture>
                 <diffuse>file://{texture_pngs['albedo']}</diffuse>
                 <normal>file://{texture_pngs['normal']}</normal>
-                <size>20</size>
+                <size>{cfg.texture_tile_size_m:g}</size>
               </texture>
             </heightmap>
           </geometry>
@@ -307,9 +312,16 @@ def write_manifest(
                 "x_m": r.x_m,
                 "y_m": r.y_m,
                 "z_m": r.z_m,
+                "roll_rad": r.roll_rad,
+                "pitch_rad": r.pitch_rad,
                 "yaw_rad": r.yaw_rad,
                 "scale_m": r.scale_m,
                 "variant": r.variant,
+                # True horizontal footprint of the collision ellipsoid, so the costmap
+                # can mark what the rover can actually hit instead of assuming a
+                # scale_m-radius circle (scale_m is the mesh BOUNDING radius, which
+                # overstates the thin axes of these deliberately anisotropic boulders).
+                "collision_radii_m": list(r.collision_radii_m),
             }
             for r in rocks
         ],

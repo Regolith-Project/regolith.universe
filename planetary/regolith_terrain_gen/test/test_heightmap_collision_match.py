@@ -87,6 +87,11 @@ def test_rendered_png_decodes_back_to_absolute_surface(seed, tmp_path):
     pixels = np.asarray(Image.open(png_path)).astype(np.float64)
     # gz decode for a full-range PNG: rendered = pos_z + (pixel/65535) * size_z.
     rendered = z_min + (pixels / 65535.0) * z_span
+    # The PNG is written TRANSPOSED, because gz's image axes are (x, y) and this
+    # module's arrays are [y, x] - see save_heightmap_png. Undo that here so this test
+    # keeps checking the VERTICAL mapping it was written for; orientation itself is
+    # covered by test_heightmap_orientation.py.
+    rendered = rendered.T
 
     max_err = float(np.abs(rendered - visual_heightmap).max())
     quantization_m = z_span / 65535.0
