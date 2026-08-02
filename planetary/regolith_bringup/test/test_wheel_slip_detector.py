@@ -1,0 +1,228 @@
+# Copyright 2026 Regolith Project contributors
+# SPDX-License-Identifier: Apache-2.0
+"""Tests for wheel_slip_node.py's SlipDetector.
+
+The detector's job is to tell "the wheels are turning and the rover is going
+nowhere" from "the wheels are turning and the rover is driving", using wheel
+odometry and an IMU and nothing else. The case that matters most here is the
+FALSE POSITIVE: declaring slip on a moving rover feeds the EKF a zero-velocity
+update that is just as wrong as the phantom odometry it exists to suppress, so
+the driving cases below are the point of this file, not filler.
+
+The numbers come from a recorded run (see calibrate_slip_detector.py and
+PROGRESS.md), not from taste: over 4,700 windows of genuine driving the
+smallest attitude span seen in a 15 s window was 0.0276 rad, against the
+0.010 rad threshold.
+"""
+
+import importlib.util
+import math
+import sys
+from pathlib import Path
+
+import pytest
+
+SLIP_NODE = Path(__file__).resolve().parent.parent / "scripts/wheel_slip_node.py"
+
+
+def _load_module():
+    spec = importlib.util.spec_from_file_location("wheel_slip_node", SLIP_NODE)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["wheel_slip_node"] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+wheel_slip_node = _load_module()
+SlipDetector = wheel_slip_node.SlipDetector
+
+
+def feed(detector, duration_s, vx, wz_wheel, wz_gyro, attitude_rate=0.0, rate_hz=10.0):
+    """Feeds `duration_s` of samples; attitude_rate tilts the body over time."""
+    steps = int(duration_s * rate_hz)
+    start = detector._samples[-1][0] if detector._samples else 0.0
+    for i in range(1, steps + 1):
+        t = start + i / rate_hz
+        roll = attitude_rate * t
+        detector.add(t, vx, wz_wheel, wz_gyro, (roll, 0.0, 0.0))
+    return detector
+
+
+def test_wedged_rover_is_detected():
+    """Wheels claiming 0.2 m/s while the body does not move at all."""
+    detector = SlipDetector()
+    feed(detector, 20.0, vx=0.2, wz_wheel=0.0, wz_gyro=0.0)
+    assert detector.slipping()
+
+
+def test_driving_rover_is_not_flagged():
+    """Same wheel claim, but the terrain is tilting the body as it goes.
+
+    0.002 rad/s over the 15 s window is 0.030 rad of span - the SMALLEST
+    attitude change measured across 4,700 real driving windows, i.e. the
+    hardest genuine-driving case in the recording.
+    """
+    detector = SlipDetector()
+    feed(detector, 20.0, vx=0.2, wz_wheel=0.0, wz_gyro=0.01, attitude_rate=0.002)
+    assert not detector.slipping()
+
+
+def test_stationary_rover_with_still_wheels_is_not_flagged():
+    """Parked is not slipping: the wheels are not claiming anything."""
+    detector = SlipDetector()
+    feed(detector, 20.0, vx=0.0, wz_wheel=0.0, wz_gyro=0.0)
+    assert not detector.slipping()
+
+
+def test_rotating_in_place_is_not_flagged():
+    """Turning on the spot: no forward claim, and the gyro confirms the yaw."""
+    detector = SlipDetector()
+    steps = 200
+    for i in range(1, steps + 1):
+        t = i / 10.0
+        detector.add(t, 0.0, 0.4, 0.4, (0.0, 0.0, 0.4 * t))
+    assert not detector.slipping()
+
+
+def test_wheels_claim_rotation_the_gyro_does_not_see():
+    """Wheels spinning differentially against a pinned chassis: claimed yaw
+    rate with no measured yaw rate is slip even though nothing tilts."""
+    detector = SlipDetector()
+    feed(detector, 20.0, vx=0.2, wz_wheel=0.4, wz_gyro=0.0)
+    assert detector.slipping()
+
+
+def test_short_history_never_declares_slip():
+    """A window that is not yet full says nothing rather than guessing."""
+    detector = SlipDetector()
+    feed(detector, 2.0, vx=0.2, wz_wheel=0.0, wz_gyro=0.0)
+    assert detector.features() is None
+    assert not detector.slipping()
+
+
+def test_yaw_wrap_is_not_mistaken_for_motion():
+    """Crossing +-pi must not look like a 6 rad attitude change (which would
+    suppress detection) - the detector unwraps yaw."""
+    detector = SlipDetector()
+    for i in range(1, 201):
+        t = i / 10.0
+        # Sitting still at a heading right on the wrap point, dithering across it.
+        yaw = math.pi - 0.001 if i % 2 else -math.pi + 0.001
+        detector.add(t, 0.2, 0.0, 0.0, (0.0, 0.0, yaw))
+    features = detector.features()
+    assert features["attitude_span_rad"] < 0.01
+    assert detector.slipping()
+
+
+@pytest.mark.parametrize(
+    "observed_fraction,expected_slip",
+    [
+        (0.08, True),    # bottom of the measured slipping band
+        (0.124, True),   # top of it
+        (0.169, False),  # bottom of the measured honest-driving band
+        (0.85, False),   # median honest driving
+    ],
+)
+def test_measured_rotation_bands(observed_fraction, expected_slip):
+    """The threshold sits in the gap between two bands measured on a real run:
+    slipping windows corroborated 8.2-12.4% of the wheels' claimed rotation,
+    honest driving 16.9-173%. Both edges are pinned here so a future tweak to
+    the threshold has to admit it is moving out of the measured gap."""
+    detector = SlipDetector()
+    wheel_rate = 0.4
+    for i in range(1, 201):
+        t = i / 10.0
+        detector.add(t, 0.2, wheel_rate, wheel_rate * observed_fraction, (0.05, 0.02, 0.1 * t))
+    assert detector.slipping() is expected_slip
+
+
+def test_slip_is_released_only_with_margin():
+    """Hysteresis: what declares slip (<= 0.145) must not immediately release
+    at 0.15, or the ZUPT flickers on and off around the boundary."""
+    detector = SlipDetector()
+    for i in range(1, 201):
+        detector.add(i / 10.0, 0.2, 0.4, 0.4 * 0.10, (0.05, 0.02, 0.01 * i))
+    assert detector.slipping()
+    assert not detector.clearing()
+
+    for i in range(201, 401):  # gyro now corroborates well past the release ratio
+        detector.add(i / 10.0, 0.2, 0.4, 0.4 * 0.60, (0.05, 0.02, 0.024 * i))
+    assert detector.clearing()
+
+
+def test_release_uses_recent_evidence_not_the_whole_window():
+    """Releasing on the full 15 s window would hold the zero-velocity update for
+    15 s after the rover breaks free, because the window still contains the
+    wedge - and suppressing a really-moving rover's velocity is the same
+    corruption the ZUPT exists to prevent, in the other direction."""
+    detector = SlipDetector()
+    for i in range(1, 201):  # 20 s wedged: wheels turning, gyro sees almost none
+        detector.add(i / 10.0, 0.2, 0.4, 0.4 * 0.10, (0.05, 0.02, 0.004 * i))
+    assert detector.slipping()
+    assert not detector.clearing()
+
+    # 6 s of genuinely corroborated rotation - less than half the declaration
+    # window, so only a recent-slice release can see it.
+    for i in range(201, 261):
+        detector.add(i / 10.0, 0.2, 0.4, 0.4 * 0.90, (0.05, 0.02, 0.036 * i))
+    assert detector.clearing()
+
+
+def test_quiet_wheels_do_not_release_the_gate():
+    """Regression: observed live as the gate flickering at the /odom message
+    rate - 24 declare/clear pairs in two seconds.
+
+    The rover was wedged (the 15 s window saw the disagreement, so slipping()
+    stayed true) but had just been commanded to stop, so the most recent
+    seconds claimed almost nothing and the release test read that absence of
+    evidence as evidence of recovery. Releasing on quiet wheels is pointless
+    anyway: with nothing being claimed there is nothing for the gate to
+    suppress, so the safe answer is to stay latched.
+    """
+    detector = SlipDetector()
+    for i in range(1, 151):  # 15 s wedged, wheels spinning, gyro sees ~10%
+        detector.add(i / 10.0, 0.2, 0.4, 0.04, (0.05, 0.02, 0.004 * i))
+    assert detector.slipping()
+
+    for i in range(151, 201):  # 5 s stopped: wheels claim nothing at all
+        detector.add(i / 10.0, 0.0, 0.0, 0.0, (0.05, 0.02, 0.604))
+    assert detector.slipping(), "the wedge is still visible over the full window"
+    assert not detector.clearing(), "must not release on quiet wheels"
+
+
+def test_release_needs_positive_evidence_not_just_a_gap_in_data():
+    """Immediately after declaring slip there is no recent evidence either way;
+    the safe answer is to keep suppressing, not to release."""
+    detector = SlipDetector()
+    for i in range(1, 201):
+        detector.add(i / 10.0, 0.2, 0.4, 0.4 * 0.10, (0.05, 0.02, 0.004 * i))
+    assert detector.slipping()
+    detector._samples.clear()  # no recent samples at all
+    detector.add(20.1, 0.2, 0.4, 0.0, (0.05, 0.02, 0.08))
+    assert not detector.clearing()
+
+
+def test_wheels_claiming_little_rotation_cannot_trigger_the_rotation_test():
+    """A ratio computed from almost no claimed rotation is noise, not evidence."""
+    detector = SlipDetector()
+    for i in range(1, 201):
+        t = i / 10.0
+        # 0.01 rad/s over 15 s = 0.15 rad claimed, under the 0.5 rad floor,
+        # and the body is visibly tilting, so nothing should fire.
+        detector.add(t, 0.2, 0.01, 0.0, (0.004 * t, 0.0, 0.0))
+    assert not detector.slipping()
+
+
+@pytest.mark.parametrize("window_s,expected", [(3.0, False), (15.0, True)])
+def test_window_length_is_what_makes_the_test_possible(window_s, expected):
+    """The measured reason the window is 15 s and not 3 s.
+
+    A rover driving straight across smooth ground tilts slowly. Over 3 s it
+    barely tilts at all and is indistinguishable from a wedged one; over 15 s
+    it is clearly distinguishable. This is the same signal in both cases - only
+    the window differs.
+    """
+    smooth_drive = SlipDetector(window_s=window_s)
+    feed(smooth_drive, 25.0, vx=0.2, wz_wheel=0.0, wz_gyro=0.0006, attitude_rate=0.002)
+    # `expected` is whether the driving rover is correctly NOT flagged.
+    assert (not smooth_drive.slipping()) is expected

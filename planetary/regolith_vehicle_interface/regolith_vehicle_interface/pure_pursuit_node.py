@@ -73,6 +73,7 @@ class PurePursuitNode(Node):
         self._flipped = False
         self._replan_count = 0
         self._given_up_goal_xy = None  # (x, y) of a goal we've stopped retrying
+        self._recovery_active = False
 
         costmap_qos = QoSProfile(depth=1)
         costmap_qos.durability = QoSDurabilityPolicy.TRANSIENT_LOCAL
@@ -89,6 +90,12 @@ class PurePursuitNode(Node):
         # silently replan forever after a flip).
         self.create_subscription(Imu, "/imu", self._on_imu, 10)
         self.create_subscription(PoseStamped, "/goal_pose", self._on_goal, 10)
+        # While the recovery node is running an escape maneuver it owns
+        # /cmd_vel outright. Publishing "faster than" this node is not the same
+        # as controlling the rover - at 30 Hz against 10 Hz, a quarter of the
+        # commands gz-sim executed during a maneuver were still this node's,
+        # driving forward into the obstacle the maneuver was reversing out of.
+        self.create_subscription(Bool, "/recovery_active", self._on_recovery_active, 10)
         self._goal_pub = self.create_publisher(PoseStamped, "/goal_pose", 10)
         self._cmd_pub = self.create_publisher(Twist, "/cmd_vel", 10)
         self._goal_reached_pub = self.create_publisher(Bool, "/goal_reached", 10)
@@ -97,6 +104,20 @@ class PurePursuitNode(Node):
         self.create_timer(period, self._control_step)
 
     def _on_costmap(self, msg: OccupancyGrid) -> None:
+        # A costmap that has genuinely changed (the recovery node marking a
+        # keep-out zone where the rover wedged) means the next attempt at this
+        # goal is not the same attempt again, so the give-up budget below is
+        # restored. Without this, a run with several wedges exhausts its 8
+        # replans on approaches the planner can now route around, and the rover
+        # parks with the goal declared unreachable.
+        if self._costmap is not None and msg.data != self._costmap.data:
+            if self._replan_count or self._given_up_goal_xy is not None:
+                self.get_logger().info(
+                    "Costmap changed (a new keep-out zone) - restoring the replan budget: the "
+                    "route being retried is not the one that already failed"
+                )
+            self._replan_count = 0
+            self._given_up_goal_xy = None
         self._costmap = msg
 
     def _on_path(self, msg: Path) -> None:
@@ -125,6 +146,20 @@ class PurePursuitNode(Node):
 
     def _on_imu(self, msg: Imu) -> None:
         self._imu_orientation = msg.orientation
+
+    def _on_recovery_active(self, msg: Bool) -> None:
+        if msg.data != self._recovery_active:
+            self.get_logger().info(
+                "Recovery node has taken over /cmd_vel - pausing path following"
+                if msg.data
+                else "Recovery finished - resuming path following"
+            )
+        self._recovery_active = msg.data
+        if msg.data:
+            # Progress timing restarts after the maneuver: the rover being held
+            # still by someone else is not a stall of this node's making.
+            self._last_progress_position = None
+            self._last_progress_time = self.get_clock().now()
 
     def _check_flipped(self) -> bool:
         """Fail loudly instead of silently cycling through stall recovery when the
@@ -168,6 +203,8 @@ class PurePursuitNode(Node):
         self._cmd_pub.publish(Twist())
 
     def _control_step(self) -> None:
+        if self._recovery_active:
+            return  # the recovery node owns /cmd_vel; do not fight it
         if self._check_flipped():
             self._stop()
             return

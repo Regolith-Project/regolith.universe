@@ -12,6 +12,7 @@ from pathlib import Path
 
 import numpy as np
 import rclpy
+from geometry_msgs.msg import PointStamped
 from nav_msgs.msg import OccupancyGrid
 from PIL import Image
 from rclpy.node import Node
@@ -100,6 +101,19 @@ def build_costmap(
     return cost_grid, actual_resolution_m, -half_world, -half_world
 
 
+def stamp_hazard(cost_grid: np.ndarray, row: int, col: int, radius_cells: int) -> int:
+    """Marks a lethal disc of `radius_cells` around (row, col). Returns cells marked.
+
+    Mutates the grid in place - hazards accumulate over a run, and a later one
+    must not undo an earlier one.
+    """
+    rows, cols = cost_grid.shape
+    rr, cc = np.ogrid[:rows, :cols]
+    disc = (rr - row) ** 2 + (cc - col) ** 2 <= radius_cells**2
+    cost_grid[disc] = 100
+    return int(disc.sum())
+
+
 class CostmapNode(Node):
     def __init__(self):
         super().__init__("regolith_costmap")
@@ -107,6 +121,15 @@ class CostmapNode(Node):
         self.declare_parameter("resolution_m", 1.0)
         self.declare_parameter("rover_radius_m", 0.3)
         self.declare_parameter("slope_lethal_deg", 20.0)
+        # Learned keep-out zones: places the rover actually got wedged. The
+        # a-priori map above knows every rock's footprint but not whether a gap
+        # between two of them is really drivable, so a wedge is information the
+        # map did not have - without recording it the planner keeps routing
+        # through the same gap after every recovery (see PROGRESS.md's res40
+        # M4 failure: 64 stuck events, all of them re-approaching the obstacle
+        # that caused the previous one). Marking hazards is what a real rover's
+        # FDIR does with a bumper/stall event, not a simulation shortcut.
+        self.declare_parameter("hazard_radius_m", 1.2)
 
         resolution_m = self.get_parameter("resolution_m").value
         if resolution_m <= 0.0:
@@ -132,15 +155,56 @@ class CostmapNode(Node):
             self.get_parameter("rover_radius_m").value,
             self.get_parameter("slope_lethal_deg").value,
         )
-        self._msg = self._to_occupancy_grid(cost_grid, resolution_m, origin_x, origin_y)
+        self._base_grid = cost_grid            # a-priori map, never overwritten
+        self._grid = cost_grid.copy()          # base + learned hazards
+        self._resolution_m = resolution_m
+        self._origin = (origin_x, origin_y)
+        self._hazards = []
+        self._msg = self._to_occupancy_grid(self._grid, resolution_m, origin_x, origin_y)
 
         qos = QoSProfile(depth=1)
         qos.durability = QoSDurabilityPolicy.TRANSIENT_LOCAL
         self._pub = self.create_publisher(OccupancyGrid, "/costmap", qos)
+        self.create_subscription(PointStamped, "/hazard/stuck_point", self._on_hazard, 10)
         self.create_timer(1.0, self._publish)
         self.get_logger().info(
             f"Published costmap: {cost_grid.shape[1]}x{cost_grid.shape[0]} cells "
             f"at {resolution_m:.3f} m/cell"
+        )
+
+    def _on_hazard(self, msg: PointStamped) -> None:
+        """Stamps a lethal disc where the rover reported getting wedged.
+
+        The point arrives in the estimator's frame (that is the frame the
+        planner and this costmap both work in), so a drifting estimate marks a
+        drifting hazard - deliberately: the marking only has to be consistent
+        with the frame the planner routes in for the rover to stop retrying the
+        same approach.
+        """
+        radius_m = self.get_parameter("hazard_radius_m").value
+        rover_radius_m = self.get_parameter("rover_radius_m").value
+        rows, cols = self._grid.shape
+        col = int((msg.point.x - self._origin[0]) / self._resolution_m)
+        row = int((msg.point.y - self._origin[1]) / self._resolution_m)
+        if not (0 <= row < rows and 0 <= col < cols):
+            self.get_logger().warn(
+                f"Ignoring hazard at ({msg.point.x:.1f}, {msg.point.y:.1f}) - outside the costmap"
+            )
+            return
+
+        # Inflate by the rover radius here, the same way build_costmap inflates
+        # the a-priori lethal cells, so the whole footprint clears the hazard.
+        cells = max(1, int(round((radius_m + rover_radius_m) / self._resolution_m)))
+        marked = stamp_hazard(self._grid, row, col, cells)
+        self._hazards.append((msg.point.x, msg.point.y))
+        self._msg = self._to_occupancy_grid(
+            self._grid, self._resolution_m, self._origin[0], self._origin[1]
+        )
+        self._publish()
+        self.get_logger().warn(
+            f"Hazard #{len(self._hazards)} marked at ({msg.point.x:.2f}, {msg.point.y:.2f}): "
+            f"{marked} cells lethal ({radius_m:.1f} m + {rover_radius_m:.1f} m rover "
+            "radius). The rover got wedged here; the planner will route around it from now on."
         )
 
     def _to_occupancy_grid(self, cost_grid: np.ndarray, resolution_m: float, origin_x: float, origin_y: float):

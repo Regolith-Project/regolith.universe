@@ -37,10 +37,19 @@ def _diagonal_covariance(variance: float, size: int = 3) -> list:
 class SensorCovarianceRelay(Node):
     def __init__(self):
         super().__init__("sensor_covariance_relay")
+        # The odometry source is a parameter because wheel_slip_node.py sits
+        # between gz and this relay in the running system, publishing
+        # /odom/gated - raw wheel odometry with a zero-velocity update
+        # substituted while the wheels are slipping in place. This relay is
+        # deliberately kept downstream of the gate so the covariance it fills
+        # in is the one the EKF sees for whichever velocity it is given.
+        self.declare_parameter("odom_topic", "/odom")
         self._imu_pub = self.create_publisher(Imu, "/imu/with_covariance", 10)
         self.create_subscription(Imu, "/imu", self._on_imu, 10)
         self._odom_pub = self.create_publisher(Odometry, "/odom/with_covariance", 10)
-        self.create_subscription(Odometry, "/odom", self._on_odom, 10)
+        self.create_subscription(
+            Odometry, self.get_parameter("odom_topic").value, self._on_odom, 10
+        )
 
     def _on_imu(self, msg: Imu) -> None:
         # gz-sim reports the sensor's own internal frame name (e.g.

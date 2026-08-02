@@ -307,11 +307,24 @@ def _generate_and_launch(context, *args, **kwargs):
     # See PROGRESS.md M3 for why this relay is necessary (gz-sim publishes all-zero
     # sensor covariance, which robot_localization treats as "ignore this measurement";
     # the IMU's frame_id also needs fixing to match the URDF's TF tree).
+    # Wheel-slip gate, upstream of the covariance relay: while the chassis is
+    # pinned and the wheels spin, wheel odometry integrates distance that never
+    # happened and the EKF - which has no absolute reference - keeps that error
+    # forever (see wheel_slip_node.py and PROGRESS.md's res40 M4 failure). This
+    # node republishes /odom as /odom/gated with a zero-velocity update
+    # substituted while it detects slip, from onboard signals only.
+    wheel_slip_node = Node(
+        package="regolith_bringup",
+        executable="wheel_slip_node.py",
+        output="screen",
+        parameters=[{"use_sim_time": True}],
+    )
+
     sensor_covariance_relay = Node(
         package="regolith_bringup",
         executable="sensor_covariance_relay.py",
         output="screen",
-        parameters=[{"use_sim_time": True}],
+        parameters=[{"use_sim_time": True, "odom_topic": "/odom/gated"}],
     )
 
     ekf_config = FindPackageShare("regolith_bringup").find("regolith_bringup") + "/config/ekf.yaml"
@@ -400,6 +413,7 @@ def _generate_and_launch(context, *args, **kwargs):
         for name, node in [
             ("robot_state_publisher", robot_state_publisher),
             ("parameter_bridge", bridge),
+            ("wheel_slip_node", wheel_slip_node),
             ("sensor_covariance_relay", sensor_covariance_relay),
             ("ekf_node", ekf_node),
             ("costmap_node", costmap_node),
@@ -415,6 +429,7 @@ def _generate_and_launch(context, *args, **kwargs):
         gz_sim,
         robot_state_publisher,
         bridge,
+        wheel_slip_node,
         sensor_covariance_relay,
         ekf_node,
         costmap_node,

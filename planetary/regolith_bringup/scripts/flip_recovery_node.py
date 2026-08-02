@@ -26,24 +26,44 @@ travel to get off the offending lip - so the localization estimate (which
 does not observe the teleport) stays consistent with the physical position to
 within its normal noise, and forces the orientation upright.
 
-This node also carries a second, unrelated backstop: a "stuck" detector. In a
-tight skid-steer turn, the fixed-axle wheels must scrub laterally, and under
-lunar gravity the low wheel normal force gives a narrow friction cone - the
-dartsim contact solver occasionally collapses to an all-static solution where
-the commanded joint velocity is infeasible, and the rover's wheels lock up
-entirely while remaining upright (no roll/pitch, so the flip detector above
-never sees it - confirmed via direct testing: ground-truth position AND yaw
-both froze solid for the rest of a run while /cmd_vel kept commanding
-nonzero motion). Also confirmed directly: switching the *command* to a plain
-straight line (no angular component) broke the lock immediately, while the
-rover's position did not change on its own. That points at static friction
-under the turn demand, not a geometric wedge, and - unlike the flip case - a
-straight-line recovery nudge is something a real rover's FDIR could
-plausibly do too; it is not labelled "simulated" the way the flip reset is.
-Detection here is simple: ground truth reports near-zero motion while a
-non-trivial /cmd_vel is being commanded, sustained past a debounce. Recovery
-briefly takes over /cmd_vel with a straight-line command at a rate high
-enough to dominate whatever else is publishing, then returns control.
+This node also carries a second, unrelated backstop: a "stuck" detector. It was
+built for one failure mode and has since been measured against a different,
+more common one - both are covered here, and they want different recoveries:
+
+  * WHEELS LOCKED, UPRIGHT. In a tight skid-steer turn the fixed-axle wheels
+    must scrub laterally, and under lunar gravity the low wheel normal force
+    gives a narrow friction cone - the dartsim contact solver occasionally
+    collapses to an all-static solution where the commanded joint velocity is
+    infeasible, and the wheels lock up entirely while the rover stays upright
+    (so the flip detector never sees it). Confirmed directly: position and yaw
+    both froze while /cmd_vel kept commanding motion, and switching the command
+    to a plain straight line broke the lock immediately.
+  * WEDGED ON A BOULDER. Once rock <collision> started working at all (it was
+    a silent no-op before - the rover drove through all 190 boulders), this
+    became the dominant case by far: 64 events across three acceptance runs,
+    attributed by experiment to rock collisions rather than terrain roughness.
+    A straight-line nudge is exactly the wrong response here - it pushes
+    harder into the obstacle - and measurement agrees: those 64 nudges freed
+    the rover zero times. See PROGRESS.md.
+
+Detection now has two triggers, and the run itself reports which one fired:
+
+  * GROUND TRUTH - near-zero true motion while a non-trivial /cmd_vel is
+    commanded, sustained past a debounce. A simulation oracle, like the flip
+    detector, and it needs the rover to be almost completely stationary.
+  * WHEEL SLIP (onboard) - wheel_slip_node.py's /wheel_slip, i.e. the wheels
+    claiming distance the IMU cannot corroborate. This one uses no privileged
+    information and catches the case the oracle misses: a rover creeping and
+    scrubbing along a boulder at 1-2 cm/s is above the ground-truth trigger's
+    "not moving" threshold while its odometry runs away just the same.
+
+Recovery
+is now an escalating escape maneuver - reverse, turn away, mark the obstacle
+as a keep-out zone, re-trigger planning - see _recover_stuck. It is not
+labelled "simulated" the way the flip reset is: every part of it is something
+a real rover's FDIR could do. The node also reports, per event, whether the
+maneuver actually moved the rover, so "recovery fired" is never again mistaken
+for "recovery worked".
 """
 
 import math
@@ -52,8 +72,10 @@ import time
 from collections import deque
 
 import rclpy
-from geometry_msgs.msg import PoseStamped, Twist
+from geometry_msgs.msg import PointStamped, PoseStamped, Twist
+from nav_msgs.msg import Odometry
 from rclpy.node import Node
+from std_msgs.msg import Bool
 
 
 def _roll_pitch_yaw(q) -> tuple:
@@ -82,10 +104,29 @@ class FlipRecoveryNode(Node):
         self.declare_parameter("stuck_min_speed_mps", 0.02)      # GT speed below this counts as "not moving"
         self.declare_parameter("stuck_min_commanded_mps", 0.03)  # /cmd_vel magnitude above this counts as "trying to move"
         self.declare_parameter("stuck_debounce_s", 3.0)          # sustained mismatch before acting
-        self.declare_parameter("stuck_nudge_speed_mps", 0.2)     # straight-line override speed
-        self.declare_parameter("stuck_nudge_duration_s", 1.0)    # how long the override holds /cmd_vel
         self.declare_parameter("stuck_nudge_rate_hz", 30.0)      # publish rate during the override (must beat pure_pursuit's 10 Hz)
         self.declare_parameter("stuck_cooldown_s", 5.0)          # re-arm delay after a stuck recovery
+        # Escape maneuver, escalating over consecutive events - see _recover_stuck.
+        self.declare_parameter("escape_reverse_speed_mps", 0.2)
+        self.declare_parameter("escape_reverse_s", 3.0)          # base; doubles per consecutive event
+        self.declare_parameter("escape_turn_rate_rps", 0.5)
+        self.declare_parameter("escape_turn_s", 2.0)             # base; +1.5 s per consecutive event
+        self.declare_parameter("escape_max_reverse_s", 10.0)
+        self.declare_parameter("escape_max_turn_s", 8.0)
+        self.declare_parameter("escape_freed_threshold_m", 0.3)  # GT motion that counts as "freed"
+        self.declare_parameter("stuck_relapse_window_s", 120.0)  # re-stick within this => escalate
+        # Keep-out marking: where the obstacle is relative to the rover when it
+        # wedges (it is in front - that is the direction it was pushing).
+        self.declare_parameter("hazard_lead_m", 0.8)
+        self.declare_parameter("publish_hazards", True)
+        # Second trigger, from wheel_slip_node's onboard detector. The
+        # ground-truth trigger above needs the rover to be nearly stationary
+        # (< stuck_min_speed_mps); a rover scrubbing slowly against a boulder
+        # slips past it while its odometry runs away regardless. The onboard
+        # detector keys on the disagreement itself - wheels claiming distance
+        # the IMU cannot corroborate - so it catches the creeping case too.
+        self.declare_parameter("slip_trigger_s", 5.0)
+        self.declare_parameter("trigger_on_slip", True)
 
         # ~180 s of upright trail at check_period_s, so progressive backoff can
         # step back to a genuinely different location rather than the same lip.
@@ -102,10 +143,40 @@ class FlipRecoveryNode(Node):
         self._stuck_since = None
         self._stuck_cooldown_until = None
         self._stuck_resets = 0
+        self._stuck_consecutive = 0   # escalation level: events inside relapse_window of each other
+        self._last_stuck_t = None
+        self._escapes_freed = 0       # escape maneuvers that produced real motion
+        self._pending_escape_check = None  # (x, y, level) sampled before the maneuver
+        self._slip_since = None       # onboard wheel-slip signal asserted since
+        # Measured sim-seconds per wall-second, tracked in _tick. Escape
+        # maneuvers are specified in SIM time (that is the rover's own time -
+        # 0.2 m/s for 3 s means 0.6 m of ground covered), but they have to be
+        # executed by a wall-clock sleep loop, because the ROS clock cannot
+        # advance while this node is blocking its own executor. Without this
+        # conversion every maneuver ran ~3.5x too short: this world runs at
+        # about 0.28x real time, so the old 1.0 s nudge was 0.28 s of rover
+        # time, about 6 cm of travel.
+        self._rtf = 1.0
+        self._rtf_sample = None       # (wall_t, sim_t) from the previous tick
+        self._trigger_counts = {"ground truth": 0, "wheel slip (onboard)": 0}
+        self._trigger = None          # which detector fired the current recovery
+        self._estimated_pose = None   # /odometry/filtered, for marking hazards in the planner's frame
+        self._last_goal = None
 
         self.create_subscription(PoseStamped, "/ground_truth/pose", self._on_pose, 10)
         self.create_subscription(Twist, "/cmd_vel", self._on_cmd, 10)
+        self.create_subscription(Odometry, "/odometry/filtered", self._on_odometry, 10)
+        self.create_subscription(PoseStamped, "/goal_pose", self._on_goal, 10)
+        self.create_subscription(Bool, "/wheel_slip", self._on_slip, 10)
         self._cmd_pub = self.create_publisher(Twist, "/cmd_vel", 10)
+        self._hazard_pub = self.create_publisher(PointStamped, "/hazard/stuck_point", 10)
+        self._goal_pub = self.create_publisher(PoseStamped, "/goal_pose", 10)
+        # Publishing an override faster than pure_pursuit is not the same as
+        # having control: at 30 Hz against its 10 Hz, roughly a quarter of the
+        # commands gz-sim acts on during a maneuver are still its forward
+        # commands, which is precisely what the maneuver is trying to undo. So
+        # the follower is muted outright for the duration - see pure_pursuit_node.
+        self._recovery_pub = self.create_publisher(Bool, "/recovery_active", 10)
         period = self.get_parameter("check_period_s").value
         self.create_timer(period, self._tick)
         self.get_logger().info(
@@ -122,7 +193,17 @@ class FlipRecoveryNode(Node):
     def _on_cmd(self, msg: Twist) -> None:
         self._last_cmd = msg
 
+    def _on_odometry(self, msg: Odometry) -> None:
+        self._estimated_pose = msg.pose.pose
+
+    def _on_goal(self, msg: PoseStamped) -> None:
+        self._last_goal = msg
+
+    def _on_slip(self, msg: Bool) -> None:
+        self._slip_since = self._now_s() if msg.data else None
+
     def _tick(self) -> None:
+        self._update_rtf()
         if self._pose is None:
             return
         roll, pitch, yaw = _roll_pitch_yaw(self._pose.orientation)
@@ -152,6 +233,8 @@ class FlipRecoveryNode(Node):
             self._recover(roll, pitch)
 
     def _check_stuck(self, t: float, p) -> None:
+        if self._pending_escape_check is not None:
+            self._check_escape_result(p)
         prev = self._prev_tick_pose
         self._prev_tick_pose = (t, p.x, p.y)
         if prev is None:
@@ -167,6 +250,10 @@ class FlipRecoveryNode(Node):
         min_commanded = self.get_parameter("stuck_min_commanded_mps").value
         min_speed = self.get_parameter("stuck_min_speed_mps").value
 
+        if self._slip_triggered(t):
+            self._fire_recovery(t, "wheel slip (onboard)")
+            return
+
         if commanded_speed < min_commanded or gt_speed >= min_speed:
             self._stuck_since = None
             return
@@ -178,39 +265,194 @@ class FlipRecoveryNode(Node):
             return
         if (t - self._stuck_since) < self.get_parameter("stuck_debounce_s").value:
             return
+
+        self._fire_recovery(t, "ground truth")
+
+    def _slip_triggered(self, t: float) -> bool:
+        if not self.get_parameter("trigger_on_slip").value or self._slip_since is None:
+            return False
+        if self._stuck_cooldown_until is not None and t < self._stuck_cooldown_until:
+            return False
+        return (t - self._slip_since) >= self.get_parameter("slip_trigger_s").value
+
+    def _fire_recovery(self, t: float, trigger: str) -> None:
+        # Escalate only for events that are part of the same fight with the same
+        # obstacle; an event long after the last one starts from level 0 again.
+        window = self.get_parameter("stuck_relapse_window_s").value
+        if self._last_stuck_t is not None and (t - self._last_stuck_t) < window:
+            self._stuck_consecutive += 1
+        else:
+            self._stuck_consecutive = 0
+        self._last_stuck_t = t
+        self._trigger = trigger
+        self._trigger_counts[trigger] += 1
+        self._slip_since = None
         self._recover_stuck()
 
-    def _recover_stuck(self) -> None:
-        # Blocking burst, not a timer callback: this needs to publish faster than
-        # pure_pursuit_node's 10 Hz control loop for the whole window so the override
-        # actually reaches gz-sim instead of being immediately overwritten by whatever
-        # else is publishing /cmd_vel. _set_pose (used by the flip path) already
-        # blocks the executor for up to 6s, so a short blocking burst here is
-        # consistent with this node's existing style.
-        speed = self.get_parameter("stuck_nudge_speed_mps").value
-        duration = self.get_parameter("stuck_nudge_duration_s").value
-        rate_hz = self.get_parameter("stuck_nudge_rate_hz").value
-        override = Twist()
-        override.linear.x = speed
+    def _update_rtf(self) -> None:
+        """Tracks how fast simulated time runs against the wall clock.
 
-        deadline = time.monotonic() + duration
+        Sampled in the timer callback, where both clocks are advancing normally;
+        an exponential average smooths the jitter. Used to convert maneuver
+        durations, which are specified in sim time, into the wall-clock sleeps
+        that actually execute them.
+        """
+        wall = time.monotonic()
+        sim = self._now_s()
+        previous = self._rtf_sample
+        self._rtf_sample = (wall, sim)
+        if previous is None:
+            return
+        wall_dt = wall - previous[0]
+        sim_dt = sim - previous[1]
+        if wall_dt <= 0.0 or sim_dt <= 0.0:
+            return
+        ratio = sim_dt / wall_dt
+        if not (0.02 <= ratio <= 5.0):
+            return  # a paused or stepping sim; keep the last sane estimate
+        self._rtf = 0.9 * self._rtf + 0.1 * ratio
+
+    def _hold(self, linear_x: float, angular_z: float, duration_s: float, rate_hz: float) -> None:
+        """Publishes one command for duration_s of SIMULATED time, blocking.
+
+        Blocking, not a timer callback: the override has to publish faster than
+        pure_pursuit_node's 10 Hz control loop for the whole window, or gz-sim
+        just sees whatever pure_pursuit published last. _set_pose (used by the
+        flip path) already blocks the executor for up to 6 s, so this is
+        consistent with the node's existing style.
+
+        Because the executor is blocked, the ROS clock cannot advance here - so
+        the sim-time duration is converted to wall time with the real-time
+        factor measured in _update_rtf rather than read from the clock.
+        """
+        cmd = Twist()
+        cmd.linear.x = linear_x
+        cmd.angular.z = angular_z
+        wall_duration = duration_s / max(self._rtf, 0.02)
+        deadline = time.monotonic() + wall_duration
         while time.monotonic() < deadline:
-            self._cmd_pub.publish(override)
+            self._cmd_pub.publish(cmd)
             time.sleep(1.0 / rate_hz)
+
+    def _recover_stuck(self) -> None:
+        """Escalating escape maneuver: reverse, turn away, mark the spot, replan.
+
+        The previous recovery was a 1.0 s straight-line forward nudge. Measured
+        over the res40 acceptance runs it fired 64 times and freed the rover
+        zero times (PROGRESS.md): pushing forward harder into the boulder the
+        rover is already wedged against does nothing, and after the nudge
+        pure_pursuit steered straight back onto the same path into the same
+        rock, so the same event repeated on a ~31 s metronome for the rest of
+        the run.
+
+        What replaces it does three different things, in the order a real
+        rover's FDIR would:
+
+          1. REVERSE - back out along the way it came in, which is by
+             construction obstacle-free; forward is where the obstacle is.
+          2. TURN in place, alternating direction per attempt, so the rover
+             leaves on a different heading instead of re-approaching.
+          3. MARK the obstacle as a keep-out zone and re-trigger planning, so
+             the new path routes around it rather than back into it. Without
+             this the first two only buy one more approach.
+
+        Each consecutive event (inside stuck_relapse_window_s) escalates the
+        reverse and turn durations, because a wedge that survives one attempt
+        needs a bigger disengagement, not the same one again.
+        """
+        level = self._stuck_consecutive
+        rate_hz = self.get_parameter("stuck_nudge_rate_hz").value
+        reverse_s = min(
+            self.get_parameter("escape_reverse_s").value * (2 ** level),
+            self.get_parameter("escape_max_reverse_s").value,
+        )
+        turn_s = min(
+            self.get_parameter("escape_turn_s").value + 1.5 * level,
+            self.get_parameter("escape_max_turn_s").value,
+        )
+        reverse_speed = self.get_parameter("escape_reverse_speed_mps").value
+        turn_rate = self.get_parameter("escape_turn_rate_rps").value
+        turn_sign = 1.0 if level % 2 == 0 else -1.0
+
+        start_xy = (self._pose.position.x, self._pose.position.y) if self._pose else None
+        self._mark_hazard()
+
+        self._set_recovery_active(True)
+        try:
+            self._hold(-reverse_speed, 0.0, reverse_s, rate_hz)
+            self._hold(0.0, turn_sign * turn_rate, turn_s, rate_hz)
+            self._stop()
+        finally:
+            self._set_recovery_active(False)
 
         self._stuck_resets += 1
         self.get_logger().warn(
-            f"STUCK RECOVERY #{self._stuck_resets}: rover was commanded to move but ground "
-            f"truth showed no motion for {self.get_parameter('stuck_debounce_s').value:.0f}s "
-            "(wheels locked but upright - a dartsim static-friction lock under tight-turn "
-            "lateral scrub at low lunar-gravity normal force, not a flip - see "
-            f"flip_recovery_node.py). Took over /cmd_vel for {duration:.1f}s with a straight "
-            f"{speed:.2f} m/s command to break the lock; a real rover's FDIR could do the same."
+            f"STUCK RECOVERY #{self._stuck_resets} (escalation level {level}, triggered by "
+            f"{self._trigger}; {self._trigger_counts['ground truth']} ground-truth / "
+            f"{self._trigger_counts['wheel slip (onboard)']} onboard triggers so far). "
+            f"Escape maneuver: reversed "
+            f"{reverse_speed:.2f} m/s for {reverse_s:.1f}s, then turned "
+            f"{'left' if turn_sign > 0 else 'right'} at {turn_rate:.2f} rad/s for {turn_s:.1f}s "
+            f"(sim time, at a measured {self._rtf:.2f}x real time). "
+            "A real rover's FDIR could do the same - this is not a simulated teleport."
         )
+
+        self._replan_after_escape()
         t_now = self._now_s()
         self._stuck_since = None
         self._prev_tick_pose = None  # the override moved the rover; don't measure speed across it
         self._stuck_cooldown_until = t_now + self.get_parameter("stuck_cooldown_s").value
+        if start_xy is not None:
+            # Checked on the next tick, once queued pose messages have drained:
+            # did the maneuver actually move the rover? This is the number the
+            # old recovery never reported about itself.
+            self._pending_escape_check = (start_xy[0], start_xy[1], level)
+
+    def _mark_hazard(self) -> None:
+        """Publishes the wedge point so the costmap can make it a keep-out zone.
+
+        Marked in the ESTIMATOR's frame (/odometry/filtered), not ground truth:
+        the planner routes in that frame, so a hazard marked there stays put
+        relative to the path being planned even if the estimate has drifted.
+        Marking the true world position instead would put the keep-out zone
+        somewhere the planner's own path never goes.
+        """
+        if not self.get_parameter("publish_hazards").value or self._estimated_pose is None:
+            return
+        lead = self.get_parameter("hazard_lead_m").value
+        _, _, yaw = _roll_pitch_yaw(self._estimated_pose.orientation)
+        point = PointStamped()
+        point.header.stamp = self.get_clock().now().to_msg()
+        point.header.frame_id = "odom"
+        point.point.x = self._estimated_pose.position.x + lead * math.cos(yaw)
+        point.point.y = self._estimated_pose.position.y + lead * math.sin(yaw)
+        self._hazard_pub.publish(point)
+
+    def _replan_after_escape(self) -> None:
+        """Re-sends the active goal so the planner re-plans against the costmap
+        that now contains the keep-out zone. Without this the rover keeps
+        following the old path - which still runs through the obstacle."""
+        if self._last_goal is None:
+            return
+        goal = PoseStamped()
+        goal.header.stamp = self.get_clock().now().to_msg()
+        goal.header.frame_id = self._last_goal.header.frame_id or "odom"
+        goal.pose = self._last_goal.pose
+        self._goal_pub.publish(goal)
+
+    def _check_escape_result(self, p) -> None:
+        """Reports whether the escape maneuver actually moved the rover."""
+        x0, y0, level = self._pending_escape_check
+        self._pending_escape_check = None
+        moved = math.hypot(p.x - x0, p.y - y0)
+        freed = moved >= self.get_parameter("escape_freed_threshold_m").value
+        if freed:
+            self._escapes_freed += 1
+        self.get_logger().warn(
+            f"STUCK RECOVERY #{self._stuck_resets} result: ground truth moved {moved:.2f} m "
+            f"during the maneuver - {'FREED' if freed else 'STILL WEDGED'} "
+            f"({self._escapes_freed}/{self._stuck_resets} escapes have freed the rover so far)"
+        )
 
     def _recover(self, roll: float, pitch: float) -> None:
         if not self._history:
@@ -247,8 +489,12 @@ class FlipRecoveryNode(Node):
         _, x, y, z, yaw = target
         z += self.get_parameter("clearance_m").value
 
+        self._set_recovery_active(True)
         self._stop()  # zero cmd_vel so it doesn't drive off mid-teleport
-        ok = self._set_pose(x, y, z, yaw)
+        try:
+            ok = self._set_pose(x, y, z, yaw)
+        finally:
+            self._set_recovery_active(False)
         self._resets += 1
         stuck = " (stuck: backing off further along the trail)" if self._consecutive else ""
         self.get_logger().warn(
@@ -265,6 +511,12 @@ class FlipRecoveryNode(Node):
         # keep the earlier trail so a further relapse can back off more.
         while self._history and self._history[-1][0] > target[0]:
             self._history.pop()
+
+    def _set_recovery_active(self, active: bool) -> None:
+        """Mutes/unmutes pure_pursuit_node for the duration of a maneuver."""
+        for _ in range(3):  # a dropped mute would hand control straight back
+            self._recovery_pub.publish(Bool(data=active))
+            time.sleep(0.02)
 
     def _stop(self) -> None:
         self._cmd_pub.publish(Twist())

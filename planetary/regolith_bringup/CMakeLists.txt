@@ -8,6 +8,7 @@ install(PROGRAMS
   scripts/sensor_covariance_relay.py
   scripts/tour_mission.py
   scripts/flip_recovery_node.py
+  scripts/wheel_slip_node.py
   DESTINATION lib/${PROJECT_NAME})
 
 ament_package()

@@ -13,9 +13,39 @@ from rclpy.qos import QoSDurabilityPolicy, QoSProfile
 from regolith_planner.astar import LETHAL_COST, plan_path, smooth_path
 
 
+def nearest_free_cell(cost_grid: np.ndarray, start_rc: tuple, max_radius_cells: int):
+    """Closest non-lethal cell to start_rc, searched outward in rings.
+
+    Used when the rover's own cell is lethal, which happens for two real
+    reasons: localization drift putting the estimate inside an inflated rock,
+    and the rover having marked a keep-out zone around the obstacle it was just
+    wedged against (see costmap_node's hazard marking). Refusing to plan in
+    that state strands the rover permanently; planning from a cell a metre or
+    two away gives it something to drive onto as soon as it is clear.
+    """
+    rows, cols = cost_grid.shape
+    for radius in range(1, max_radius_cells + 1):
+        best = None
+        for dr in range(-radius, radius + 1):
+            for dc in range(-radius, radius + 1):
+                if max(abs(dr), abs(dc)) != radius:
+                    continue  # only the new ring; inner ones were checked already
+                r, c = start_rc[0] + dr, start_rc[1] + dc
+                if not (0 <= r < rows and 0 <= c < cols) or cost_grid[r, c] >= LETHAL_COST:
+                    continue
+                distance = dr * dr + dc * dc
+                if best is None or distance < best[0]:
+                    best = (distance, (r, c))
+        if best is not None:
+            return best[1]
+    return None
+
+
 class PlannerNode(Node):
     def __init__(self):
         super().__init__("regolith_planner")
+        self.declare_parameter("escape_radius_cells", 5)
+        self._escape_radius_cells = int(self.get_parameter("escape_radius_cells").value)
         self._costmap = None
         self._current_pose = None
 
@@ -40,6 +70,9 @@ class PlannerNode(Node):
         col = int((x_m - info.origin.position.x) / info.resolution)
         row = int((y_m - info.origin.position.y) / info.resolution)
         return row, col
+
+    def _nearest_free_cell(self, cost_grid: np.ndarray, start_rc: tuple):
+        return nearest_free_cell(cost_grid, start_rc, self._escape_radius_cells)
 
     def _grid_to_world(self, row: int, col: int) -> tuple:
         info = self._costmap.info
@@ -71,11 +104,25 @@ class PlannerNode(Node):
             )
             return
         if cost_grid[start_rc] >= LETHAL_COST:
+            escaped = self._nearest_free_cell(cost_grid, start_rc)
+            if escaped is None:
+                self.get_logger().warn(
+                    f"Current-position cell {start_rc} is lethal and no free cell was found "
+                    f"within {self._escape_radius_cells} cells - cannot plan from here"
+                )
+                return
+            # Refusing to plan from a lethal start used to strand the rover
+            # permanently in two situations that both really happen: localization
+            # drift putting the estimate inside an inflated rock, and a keep-out
+            # zone the rover marked around the obstacle it was just wedged
+            # against (see costmap_node's hazard marking). Planning from the
+            # nearest free cell instead gives a path the rover can pick up as
+            # soon as it is a metre clear, which is what it is trying to do.
             self.get_logger().warn(
-                f"Current-position cell {start_rc} is lethal - the estimated pose sits inside an "
-                "inflated obstacle region (possibly localization drift); cannot plan from here"
+                f"Current-position cell {start_rc} is lethal (drift, or a keep-out zone this "
+                f"rover marked itself) - planning from the nearest free cell {escaped} instead"
             )
-            return
+            start_rc = escaped
 
         grid_path = plan_path(cost_grid, start_rc, goal_rc)
         if not grid_path:
