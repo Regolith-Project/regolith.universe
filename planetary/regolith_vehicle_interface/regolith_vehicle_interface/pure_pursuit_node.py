@@ -45,7 +45,12 @@ class PurePursuitNode(Node):
         self.declare_parameter("lookahead_distance_m", 1.5)
         self.declare_parameter("base_speed_mps", 0.2)
         self.declare_parameter("max_angular_velocity", 0.3)
-        self.declare_parameter("goal_tolerance_m", 1.5)
+        # Deliberately TIGHTER than the 1.5 m the milestone asks for. When the
+        # two were equal the rover stopped the instant it crossed the
+        # requirement, so every pass measured exactly 1.50 m and any small
+        # difference between this node's frame and the judge's would flip it to
+        # a fail. Arriving with margin is the point; the bar itself is unchanged.
+        self.declare_parameter("goal_tolerance_m", 1.0)
         self.declare_parameter("path_deviation_limit_m", 4.0)
         self.declare_parameter("stall_timeout_s", 8.0)
         self.declare_parameter("control_period_s", 0.1)
@@ -222,14 +227,26 @@ class PurePursuitNode(Node):
         position = np.array([self._current_pose.position.x, self._current_pose.position.y])
         yaw = _yaw_from_quaternion(self._current_pose.orientation)
 
-        goal_xy = self._path[-1]
+        # Arrival is measured against the goal that was COMMANDED, not against
+        # path[-1]. The path's last waypoint is a costmap cell CENTRE - the
+        # planner snaps both ends to the grid - so at this world's 0.78 m cells
+        # it sits up to ~0.55 m from the goal actually asked for. Stopping
+        # "within 1.50 m" of that point can leave the rover nearly 2 m from the
+        # goal, and it did: with localization made perfect by the experimental
+        # absolute reference, seeds 42 and 7 both stopped at exactly 1.70 m and
+        # failed a 1.5 m bar for no other reason (path[-1] was 0.42 m off the
+        # goal on seed 42). That is the same mistake as trusting /goal_reached -
+        # measuring against the wrong reference - so it is fixed the same way.
+        goal_xy = (
+            np.array(current_goal_xy) if current_goal_xy is not None else self._path[-1]
+        )
         distance_to_goal = float(np.linalg.norm(goal_xy - position))
         if distance_to_goal < self.get_parameter("goal_tolerance_m").value:
             self._stop()
             self._goal_reached = True
             self._replan_count = 0
             self._given_up_goal_xy = None
-            self.get_logger().info(f"Goal reached (within {distance_to_goal:.2f} m)")
+            self.get_logger().info(f"Goal reached (within {distance_to_goal:.2f} m of the commanded goal)")
             self._goal_reached_pub.publish(Bool(data=True))
             return
 
@@ -247,6 +264,11 @@ class PurePursuitNode(Node):
             accumulated += float(np.linalg.norm(self._path[target_idx + 1] - self._path[target_idx]))
             target_idx += 1
         target_xy = self._path[target_idx]
+        if target_idx == len(self._path) - 1:
+            # Past the end of the path, steer at the real goal rather than the
+            # grid-snapped waypoint, so the final approach closes the last
+            # half-metre instead of parking next to it.
+            target_xy = goal_xy
 
         heading_to_target = float(np.arctan2(target_xy[1] - position[1], target_xy[0] - position[0]))
         alpha = _normalize_angle(heading_to_target - yaw)

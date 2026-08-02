@@ -327,13 +327,36 @@ def _generate_and_launch(context, *args, **kwargs):
         parameters=[{"use_sim_time": True, "odom_topic": "/odom/gated"}],
     )
 
-    ekf_config = FindPackageShare("regolith_bringup").find("regolith_bringup") + "/config/ekf.yaml"
+    # Localization oracle, OFF by default and never part of a milestone result:
+    # feeds the EKF a simulated absolute position reference (ground truth at
+    # ~1 Hz, 0.5 m sigma) standing in for the visual odometry this PoC does not
+    # have. It exists to test the M4 verification's falsifiable claim - that
+    # localization is the only thing between this stack and the milestone. See
+    # absolute_reference_relay.py and PROGRESS.md.
+    oracle = LaunchConfiguration("localization_oracle").perform(context).lower() == "true"
+    ekf_config_name = "/config/ekf_oracle.yaml" if oracle else "/config/ekf.yaml"
+    ekf_config = FindPackageShare("regolith_bringup").find("regolith_bringup") + ekf_config_name
+    if oracle:
+        print(
+            "[hello_moon.launch] LOCALIZATION ORACLE ENABLED - the EKF is being fed "
+            "ground-truth position. This is an experiment; results are not milestone "
+            "results. See PROGRESS.md.",
+            flush=True,
+        )
     ekf_node = Node(
         package="robot_localization",
         executable="ekf_node",
         name="ekf_filter_node",
         output="screen",
         parameters=[ekf_config],
+    )
+
+    absolute_reference_relay = Node(
+        package="regolith_bringup",
+        executable="absolute_reference_relay.py",
+        output="screen",
+        parameters=[{"use_sim_time": True}],
+        condition=IfCondition(LaunchConfiguration("localization_oracle")),
     )
 
     costmap_node = Node(
@@ -430,6 +453,7 @@ def _generate_and_launch(context, *args, **kwargs):
         robot_state_publisher,
         bridge,
         wheel_slip_node,
+        absolute_reference_relay,
         sensor_covariance_relay,
         ekf_node,
         costmap_node,
@@ -453,6 +477,13 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument(
                 "rviz", default_value="true",
                 description="Launch RViz with the rover config (needed for clicking '2D Goal Pose' goals)"
+            ),
+            DeclareLaunchArgument(
+                "localization_oracle", default_value="false",
+                description="EXPERIMENT ONLY: feed the EKF a simulated absolute position "
+                            "reference from ground truth, standing in for visual odometry. "
+                            "Results obtained with this are not milestone results - see "
+                            "absolute_reference_relay.py"
             ),
             DeclareLaunchArgument(
                 "headless", default_value="false",

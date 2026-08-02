@@ -114,6 +114,7 @@ class FlipRecoveryNode(Node):
         self.declare_parameter("escape_max_reverse_s", 10.0)
         self.declare_parameter("escape_max_turn_s", 8.0)
         self.declare_parameter("escape_freed_threshold_m", 0.3)  # GT motion that counts as "freed"
+        self.declare_parameter("escape_check_delay_s", 1.0)      # sim time to wait before judging the result
         self.declare_parameter("stuck_relapse_window_s", 120.0)  # re-stick within this => escalate
         # Keep-out marking: where the obstacle is relative to the rover when it
         # wedges (it is in front - that is the direction it was pushing).
@@ -234,7 +235,7 @@ class FlipRecoveryNode(Node):
 
     def _check_stuck(self, t: float, p) -> None:
         if self._pending_escape_check is not None:
-            self._check_escape_result(p)
+            self._check_escape_result(p, t)
         prev = self._prev_tick_pose
         self._prev_tick_pose = (t, p.x, p.y)
         if prev is None:
@@ -403,10 +404,25 @@ class FlipRecoveryNode(Node):
         self._prev_tick_pose = None  # the override moved the rover; don't measure speed across it
         self._stuck_cooldown_until = t_now + self.get_parameter("stuck_cooldown_s").value
         if start_xy is not None:
-            # Checked on the next tick, once queued pose messages have drained:
-            # did the maneuver actually move the rover? This is the number the
+            # Did the maneuver actually move the rover? This is the number the
             # old recovery never reported about itself.
-            self._pending_escape_check = (start_xy[0], start_xy[1], level)
+            #
+            # Deferred by escape_check_delay_s rather than checked on the next
+            # tick. /ground_truth/pose messages queue up during the blocking
+            # maneuver, and the timer callback can win the executor race before
+            # any of them are processed - so an immediate check reads a pose
+            # from BEFORE the maneuver and reports 0.00 m. That happened: the
+            # oracle run logged "STILL WEDGED, moved 0.00 m" for maneuvers the
+            # acceptance harness's independent trace shows moving the rover
+            # ~1.9 m. Log-only, but it under-reported the recovery's own
+            # success rate, which is exactly the kind of number this project
+            # must not get wrong in its own favour OR against it.
+            # The timestamp is deliberately None, not t_now: the ROS clock does
+            # not advance while this node blocks its own executor, so t_now here
+            # is the PRE-maneuver sim time and any delay measured from it would
+            # already look satisfied on the first tick. The first tick after the
+            # maneuver stamps it with a clock that has caught up.
+            self._pending_escape_check = (start_xy[0], start_xy[1], level, None)
 
     def _mark_hazard(self) -> None:
         """Publishes the wedge point so the costmap can make it a keep-out zone.
@@ -440,9 +456,21 @@ class FlipRecoveryNode(Node):
         goal.pose = self._last_goal.pose
         self._goal_pub.publish(goal)
 
-    def _check_escape_result(self, p) -> None:
-        """Reports whether the escape maneuver actually moved the rover."""
-        x0, y0, level = self._pending_escape_check
+    def _check_escape_result(self, p, t: float) -> None:
+        """Reports whether the escape maneuver actually moved the rover.
+
+        Only once enough sim time has passed for post-maneuver poses to have
+        been received - see the note where _pending_escape_check is set.
+        """
+        x0, y0, level, finished_t = self._pending_escape_check
+        if finished_t is None:
+            # First tick after the maneuver: the clock has caught up, so start
+            # the delay here and judge on a later tick, by which time the queued
+            # /ground_truth/pose messages will have been processed.
+            self._pending_escape_check = (x0, y0, level, t)
+            return
+        if (t - finished_t) < self.get_parameter("escape_check_delay_s").value:
+            return
         self._pending_escape_check = None
         moved = math.hypot(p.x - x0, p.y - y0)
         freed = moved >= self.get_parameter("escape_freed_threshold_m").value

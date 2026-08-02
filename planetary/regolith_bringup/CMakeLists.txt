@@ -9,6 +9,7 @@ install(PROGRAMS
   scripts/tour_mission.py
   scripts/flip_recovery_node.py
   scripts/wheel_slip_node.py
+  scripts/absolute_reference_relay.py
   DESTINATION lib/${PROJECT_NAME})
 
 ament_package()

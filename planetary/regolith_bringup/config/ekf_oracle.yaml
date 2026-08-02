@@ -1,0 +1,74 @@
+# Copyright 2026 Regolith Project contributors
+# SPDX-License-Identifier: Apache-2.0
+#
+# EXPERIMENT ONLY - this is ekf.yaml plus a simulated absolute position
+# reference (pose0), fed from ground truth by absolute_reference_relay.py.
+# It exists to test one falsifiable claim from the M4 verification: that
+# localization is the only thing standing between this stack and the
+# milestone. Nothing that runs by default uses this file; hello_moon.launch.py
+# selects it only under localization_oracle:=true, and any acceptance number
+# produced with it is an experiment, not a milestone result. See PROGRESS.md.
+
+ekf_filter_node:
+  ros__parameters:
+    frequency: 30.0
+    sensor_timeout: 0.2
+    two_d_mode: true
+    publish_tf: true
+    map_frame: map
+    odom_frame: odom
+    base_link_frame: base_link
+    world_frame: odom
+    use_sim_time: true
+
+    # Wheel odometry (DiffDrive dead-reckoning, bridged from Gazebo): velocity only,
+    # NOT position or absolute yaw. Skid-steer turning requires real wheel scrub
+    # against the ground, which the dead-reckoning kinematic model doesn't account
+    # for - its yaw drifts hugely under turning (measured ~3x off from ground truth
+    # after a deliberate in-place-rotation test, see PROGRESS.md M3), and since its
+    # own x/y integration already used that same bad internal yaw, the *position*
+    # output is just as corrupted as the yaw - feeding position in doesn't help even
+    # with yaw fusion disabled. Only vx/vyaw (rate measurements, not integrated
+    # against the bad yaw) go in here; the EKF integrates position itself using its
+    # own state, with absolute heading coming from the IMU instead.
+    # /odom/with_covariance, not /odom directly - see sensor_covariance_relay.py.
+    odom0: /odom/with_covariance
+    odom0_config: [false, false, false,
+                   false, false, false,
+                   true,  false, false,
+                   false, false, true,
+                   false, false, false]
+    odom0_differential: false
+    odom0_relative: false
+    odom0_queue_size: 10
+
+    # IMU: orientation and angular velocity only - NOT linear acceleration.
+    # Double-integrating accelerometer data for position is a well-known drift trap
+    # even on real hardware; wheel odometry's vx above is a far better position/velocity
+    # source, so acceleration isn't needed and its noise would only hurt.
+    # /imu/with_covariance, not /imu directly - see sensor_covariance_relay.py.
+    imu0: /imu/with_covariance
+    imu0_config: [false, false, false,
+                  true,  true,  true,
+                  false, false, false,
+                  true,  true,  true,
+                  false, false, false]
+    imu0_differential: false
+    imu0_relative: false
+    imu0_remove_gravitational_acceleration: true
+    imu0_queue_size: 10
+
+    # THE ORACLE. An absolute x/y (and yaw) observation at ~1 Hz with 0.5 m
+    # sigma - roughly what a working visual-odometry or terrain-relative fix
+    # would deliver. This is the one thing the real stack does not have: with
+    # only wheel odometry and an IMU, nothing observes absolute position, so
+    # lateral slip accumulates unobserved and permanently.
+    pose0: /absolute_reference/pose
+    pose0_config: [true,  true,  false,
+                   false, false, true,
+                   false, false, false,
+                   false, false, false,
+                   false, false, false]
+    pose0_differential: false
+    pose0_relative: false
+    pose0_queue_size: 10
