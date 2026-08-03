@@ -1,12 +1,23 @@
 # Copyright 2026 Regolith Project contributors
 # SPDX-License-Identifier: Apache-2.0
 #
-# robot_localization EKF fusing wheel odometry + IMU only (no visual odometry -
-# see docs/architecture.md's "Hello-World PoC Scope" for why). 2D mode: the
-# rover's roll/pitch over rough terrain is real but not fused here for this
-# PoC: chosen to keep this milestone's estimator small and well-understood
-# with only two sensor sources, at the cost of not tracking attitude on
-# slopes. Revisit if/when a 3D-aware estimate is actually needed downstream.
+# robot_localization EKF fusing wheel odometry + IMU + visual odometry. 2D mode:
+# the rover's roll/pitch over rough terrain is real but not fused here for this
+# PoC: chosen to keep this milestone's estimator small and well-understood, at
+# the cost of not tracking attitude on slopes. Revisit if/when a 3D-aware
+# estimate is actually needed downstream.
+#
+# Each sensor is fused for exactly what it can observe, and for nothing else:
+#
+#   wheel odometry   vx, vyaw            cannot represent vy at all
+#   IMU              orientation, wxyz   cannot observe position error
+#   visual odometry  vx, vy              the term nothing else could see
+#
+# The odom1 vy slot is why M4 was reopened. A differential-drive model asserts
+# vy = 0 by construction, so the ~10% of this rover's motion that is lateral
+# slide was invisible to the estimator and accumulated as an uncorrected random
+# walk - measured at 3.1-13.1 m of arrival error across the acceptance seeds,
+# equal to the EKF's own divergence plus the stopping tolerance every time.
 
 ekf_filter_node:
   ros__parameters:
@@ -56,3 +67,41 @@ ekf_filter_node:
     imu0_relative: false
     imu0_remove_gravitational_acceleration: true
     imu0_queue_size: 10
+
+    # Visual odometry: body-frame vy, and deliberately nothing else.
+    #
+    # vy is the whole point - see the header. Measured against ground truth over
+    # 130 real frame pairs from this world, VO's lateral channel is unbiased at
+    # +0.000 m/s with a standard deviation of 0.018, and the covariance the node
+    # derives per estimate from its own reprojection residual (sigma 0.020) matches
+    # that almost exactly - so the filter is being told the truth about how much to
+    # trust it.
+    #
+    # NOT vx, although the node publishes it. The same measurement found VO's
+    # forward channel biased 0.060 m/s LOW - a 30% under-report at the rover's
+    # 0.2 m/s cruise - while gated wheel odometry over-claims distance by about 1%.
+    # Fusing it would inject a systematic error into the one term the existing
+    # sensors already measure well, and a filter that believes it has travelled
+    # less than it has drives past its goal. Each sensor is fused for what it is
+    # actually good at, which is the measured answer rather than the tidy one.
+    #
+    # NOT yaw rate, though VO estimates it perfectly well: the IMU's gyro
+    # already observes it better, and M4's error budget showed heading was never
+    # the problem - dead-reckoning along the IMU's heading reproduced ground
+    # truth to 3.5 m over 107 m, while the wheel-integrated heading gave 43 m.
+    # Adding a third, noisier vote on a term that is already solved would only
+    # let VO's noise into a channel that does not need it.
+    #
+    # NOT position: visual odometry is a RELATIVE sensor. Integrating its own
+    # pose and fusing that would hand the filter two independently drifting
+    # position estimates to fight over. Fusing velocity keeps each sensor to
+    # what it measures and lets the filter integrate once.
+    odom1: /vo/odom
+    odom1_config: [false, false, false,
+                   false, false, false,
+                   false, true,  false,
+                   false, false, false,
+                   false, false, false]
+    odom1_differential: false
+    odom1_relative: false
+    odom1_queue_size: 10

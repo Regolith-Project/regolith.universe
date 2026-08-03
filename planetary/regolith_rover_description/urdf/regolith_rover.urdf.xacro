@@ -149,6 +149,36 @@
     </sensor>
   </gazebo>
 
+  <!-- Depth camera, deliberately sharing camera_link and the RGB camera's exact
+       intrinsics (same hfov, same width/height), so depth pixel (u,v) is the same ray
+       as RGB pixel (u,v) and no registration/rectification step is needed between them.
+       Its only consumer is regolith_visual_odometry, which needs metric depth to give
+       tracked features a scale: a monocular camera cannot observe scale at all, so
+       monocular VO would recover the SHAPE of the rover's motion but not its size -
+       useless for correcting a metre-scale drift. PLAN.md M2 lists an optional depth
+       camera in the rover's declared sensor suite.
+       Lower update_rate than the RGB camera (10 vs 30 Hz): the VO node processes at
+       10 Hz (see its frame_stride parameter) and depth images are the expensive part
+       of the bridge, so there is nothing to gain from generating frames nobody reads. -->
+  <gazebo reference="camera_link">
+    <sensor name="depth_camera" type="depth_camera">
+      <always_on>true</always_on>
+      <update_rate>10</update_rate>
+      <topic>depth_camera</topic>
+      <camera>
+        <horizontal_fov>1.4</horizontal_fov>
+        <image>
+          <width>640</width>
+          <height>480</height>
+        </image>
+        <clip>
+          <near>0.05</near>
+          <far>100</far>
+        </clip>
+      </camera>
+    </sensor>
+  </gazebo>
+
   <gazebo>
     <allow_auto_disable>false</allow_auto_disable>
     <plugin filename="gz-sim-diff-drive-system" name="gz::sim::systems::DiffDrive">

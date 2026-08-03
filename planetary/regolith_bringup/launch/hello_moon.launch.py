@@ -289,6 +289,10 @@ def _generate_and_launch(context, *args, **kwargs):
             "/odometry@nav_msgs/msg/Odometry@gz.msgs.Odometry",
             "/camera@sensor_msgs/msg/Image@gz.msgs.Image",
             "/camera_info@sensor_msgs/msg/CameraInfo@gz.msgs.CameraInfo",
+            # Depth, for visual odometry. Shares camera_link and the RGB camera's
+            # intrinsics, so /camera/camera_info describes both and pixel (u,v) is the
+            # same ray in each - see regolith_rover.urdf.xacro.
+            "/depth_camera@sensor_msgs/msg/Image@gz.msgs.Image",
             "/imu@sensor_msgs/msg/Imu@gz.msgs.IMU",
             f"/world/{WORLD_NAME}/model/{ROVER_NAME}/joint_state@sensor_msgs/msg/JointState@gz.msgs.Model",
             # Ground truth, comparison only - deliberately NOT fed into the EKF, and
@@ -299,6 +303,7 @@ def _generate_and_launch(context, *args, **kwargs):
             ("/odometry", "/odom"),
             ("/camera", "/camera/image"),
             ("/camera_info", "/camera/camera_info"),
+            ("/depth_camera", "/camera/depth"),
             (f"/world/{WORLD_NAME}/model/{ROVER_NAME}/joint_state", "/joint_states"),
             (f"/model/{ROVER_NAME}/pose", "/ground_truth/pose"),
         ],
@@ -333,6 +338,26 @@ def _generate_and_launch(context, *args, **kwargs):
     # have. It exists to test the M4 verification's falsifiable claim - that
     # localization is the only thing between this stack and the milestone. See
     # absolute_reference_relay.py and PROGRESS.md.
+    # Visual odometry: the exteroceptive sensor M4's error budget identified as the
+    # missing piece. It observes the lateral slide that a differential-drive model
+    # cannot represent, and feeds the EKF vx/vy (see regolith_visual_odometry and
+    # ekf.yaml's odom1). Cameras only, never ground truth - so unlike the oracle
+    # below, runs with this on are legitimate milestone results.
+    use_visual_odometry = LaunchConfiguration("visual_odometry").perform(context).lower() == "true"
+    visual_odometry_node = Node(
+        package="regolith_visual_odometry",
+        executable="visual_odometry_node",
+        output="screen",
+        parameters=[{"use_sim_time": True}],
+    )
+    if not use_visual_odometry:
+        print(
+            "[hello_moon.launch] Visual odometry DISABLED - the EKF is running on wheel "
+            "odometry and IMU alone, which cannot observe lateral slip. This is the "
+            "configuration that scored 0/3 on M4; see PROGRESS.md.",
+            flush=True,
+        )
+
     oracle = LaunchConfiguration("localization_oracle").perform(context).lower() == "true"
     ekf_config_name = "/config/ekf_oracle.yaml" if oracle else "/config/ekf.yaml"
     ekf_config = FindPackageShare("regolith_bringup").find("regolith_bringup") + ekf_config_name
@@ -438,6 +463,9 @@ def _generate_and_launch(context, *args, **kwargs):
             ("parameter_bridge", bridge),
             ("wheel_slip_node", wheel_slip_node),
             ("sensor_covariance_relay", sensor_covariance_relay),
+            # If VO dies mid-run the rover silently reverts to the sensor suite that
+            # scored 0/3, and the run would still report a number. Tear down instead.
+            *([("visual_odometry_node", visual_odometry_node)] if use_visual_odometry else []),
             ("ekf_node", ekf_node),
             ("costmap_node", costmap_node),
             ("planner_node", planner_node),
@@ -454,6 +482,7 @@ def _generate_and_launch(context, *args, **kwargs):
         bridge,
         wheel_slip_node,
         absolute_reference_relay,
+        *([visual_odometry_node] if use_visual_odometry else []),
         sensor_covariance_relay,
         ekf_node,
         costmap_node,
@@ -484,6 +513,14 @@ def generate_launch_description() -> LaunchDescription:
                             "reference from ground truth, standing in for visual odometry. "
                             "Results obtained with this are not milestone results - see "
                             "absolute_reference_relay.py"
+            ),
+            DeclareLaunchArgument(
+                "visual_odometry", default_value="true",
+                description="RGB-D visual odometry feeding body-frame vx/vy to the EKF. On by "
+                            "default: it is the sensor M4 was missing, and the only thing in the "
+                            "stack that can observe lateral slip. Onboard cameras only - unlike "
+                            "localization_oracle, this is a real sensor and its results ARE "
+                            "milestone results"
             ),
             DeclareLaunchArgument(
                 "headless", default_value="false",
