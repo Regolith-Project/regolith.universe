@@ -83,11 +83,28 @@ confirmation in the running sim:
 The reported sigma (0.020) matches `vy`'s measured spread almost exactly, so the
 filter is being told the truth about how much to trust it.
 
-**`vx` is biased ~30% low and is therefore not fused.** Wheel odometry measures
-forward distance to about 1% once slip is gated, so fusing VO's `vx` would
-inject a systematic error into the one term the existing sensors already handle
-well — and a filter that believes it has travelled less than it has drives past
-its goal. Each sensor is used for what it is measurably good at.
+**`vx` is biased low and is therefore not fused.** How low depends on what the
+rover is doing, which is worth stating rather than collapsing to one number:
+
+| condition | `vx` bias | `vy` bias |
+|---|---|---|
+| straight-line driving (n=92) | −0.069 m/s (−35%) | +0.003 ± 0.016 |
+| turning (n=38) | −0.036 m/s (−18%) | −0.005 ± 0.022 |
+| one live cruise sample (n=51) | −0.017 m/s (−9%) | — |
+
+Wheel odometry measures forward distance to about 1% once slip is gated, so
+fusing this would inject a systematic error into the one term the existing
+sensors already handle well — and a filter that believes it has travelled less
+than it has drives past its goal.
+
+The asymmetry is the interesting part: `vy` is unbiased under exactly the same
+conditions that bias `vx`. The leading explanation — consistent with the data
+but not separately proven — is Lucas–Kanade's translation-only motion model.
+Driving forward over near ground makes texture *expand* rapidly between frames,
+and a fixed-window tracker with no affine term systematically under-tracks
+expansion; sliding sideways produces no scale change at all, so it does not.
+That would also explain why the bias is worst in straight-line driving and why
+the synthetic scenes, which are less foreshortened, show only −5%.
 
 ### Three defects this only found by being measured on real data
 

@@ -78,12 +78,14 @@ ekf_filter_node:
     # trust it.
     #
     # NOT vx, although the node publishes it. The same measurement found VO's
-    # forward channel biased 0.060 m/s LOW - a 30% under-report at the rover's
-    # 0.2 m/s cruise - while gated wheel odometry over-claims distance by about 1%.
-    # Fusing it would inject a systematic error into the one term the existing
-    # sensors already measure well, and a filter that believes it has travelled
-    # less than it has drives past its goal. Each sensor is fused for what it is
-    # actually good at, which is the measured answer rather than the tidy one.
+    # forward channel biased LOW - by 35% in straight-line driving, 18% while
+    # turning, 9% in one live cruise sample - while gated wheel odometry measures
+    # forward distance to about 1%. Fusing it would inject a systematic error into
+    # the one term the existing sensors already measure well, and a filter that
+    # believes it has travelled less than it has drives past its goal. Each sensor
+    # is fused for what it is actually good at, which is the measured answer
+    # rather than the tidy one. See regolith_visual_odometry/README.md for why vy
+    # is unbiased under the very conditions that bias vx.
     #
     # NOT yaw rate, though VO estimates it perfectly well: the IMU's gyro
     # already observes it better, and M4's error budget showed heading was never
