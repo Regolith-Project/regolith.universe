@@ -226,3 +226,55 @@ def test_window_length_is_what_makes_the_test_possible(window_s, expected):
     feed(smooth_drive, 25.0, vx=0.2, wz_wheel=0.0, wz_gyro=0.0006, attitude_rate=0.002)
     # `expected` is whether the driving rover is correctly NOT flagged.
     assert (not smooth_drive.slipping()) is expected
+
+
+def test_out_of_order_samples_do_not_crash_the_node():
+    """A timestamp that goes backwards must not take the whole launch down.
+
+    This is a regression test for a real failure, not a hypothetical: an M4
+    acceptance run died 30 s in with `ValueError: math domain error` from
+    `math.sqrt(gyro_sq / span_s)`. features() integrates over consecutive pairs
+    with `dt = t1 - t0`, so a single out-of-order sample makes dt negative and
+    drives the running sum of SQUARES below zero. This node is launched as
+    required, so its crash shut down gazebo, the EKF and the whole run with it -
+    and the harness recorded a rover that had travelled 0 m.
+
+    The trigger was load: adding the depth camera and the VO node changed message
+    timing enough for /odom and /imu stamps to arrive out of order. The bug was
+    always there; it just had not been provoked before.
+
+    The window below is built so that the backwards sample genuinely drives the
+    sum negative rather than merely denting it: the run is quiet (gyro 0, so it
+    contributes nothing to the sum of squares) except for one lively sample
+    immediately before the jump, whose gyro^2 is then multiplied by a negative
+    dt. Feeding a uniformly noisy window instead would leave the total positive,
+    and the test would pass with or without the fix - which is exactly what the
+    first version of this test did.
+    """
+    detector = SlipDetector()
+    feed(detector, 20.0, vx=0.2, wz_wheel=0.0, wz_gyro=0.0)
+
+    latest = detector._samples[-1][0]
+    detector.add(latest + 0.1, 0.2, 0.0, 3.0, (0.0, 0.0, 0.0))  # one lively sample
+    detector.add(latest - 3.0, 0.2, 0.0, 3.0, (0.0, 0.0, 0.0))  # then 3 s into the past
+
+    features = detector.features()
+    assert features is not None
+    assert features["gyro_rms_rps"] >= 0.0
+    assert math.isfinite(features["gyro_rms_rps"])
+    assert detector.dropped_out_of_order == 1
+    # And the detector still works afterwards - the guard drops the sample, not the window.
+    assert detector.slipping() in (True, False)
+
+
+def test_duplicate_timestamps_are_dropped():
+    """Two samples with the same stamp give dt = 0 and contribute nothing."""
+    detector = SlipDetector()
+    feed(detector, 20.0, vx=0.2, wz_wheel=0.0, wz_gyro=0.1)
+
+    before = len(detector._samples)
+    latest = detector._samples[-1][0]
+    detector.add(latest, 0.2, 0.0, 0.1, (0.0, 0.0, 0.0))
+
+    assert len(detector._samples) == before
+    assert detector.dropped_out_of_order == 1

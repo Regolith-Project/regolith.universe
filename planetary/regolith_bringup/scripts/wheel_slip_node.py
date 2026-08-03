@@ -137,11 +137,24 @@ class SlipDetector:
         self.max_attitude_span_rad = max_attitude_span_rad
         self.max_gyro_rms_rps = max_gyro_rms_rps
         self._samples = deque()  # (t, vx, wz_wheel, wz_gyro, roll, pitch, yaw_unwrapped)
+        self.dropped_out_of_order = 0
         self._yaw = None
 
     def add(self, t: float, vx: float, wz_wheel: float, wz_gyro: float, rpy: tuple) -> None:
         roll, pitch, yaw = rpy
         self._yaw = yaw if self._yaw is None else _unwrap(self._yaw, yaw)
+        # Drop anything that does not move time forward. features() integrates
+        # over consecutive pairs with dt = t1 - t0, so one out-of-order sample
+        # makes dt negative and every accumulator wrong - including the sum of
+        # SQUARES, which then goes negative and takes math.sqrt with it. That is
+        # not hypothetical: it killed an M4 acceptance run 30 s in with
+        # "ValueError: math domain error", and because this node is required,
+        # the whole launch went down with it. Guarding here rather than at each
+        # accumulator fixes all of them at once, and a stale duplicate carries
+        # no information worth keeping anyway.
+        if self._samples and t <= self._samples[-1][0]:
+            self.dropped_out_of_order += 1
+            return
         self._samples.append((t, vx, wz_wheel, wz_gyro, roll, pitch, self._yaw))
         while self._samples and t - self._samples[0][0] > self.window_s:
             self._samples.popleft()
@@ -185,7 +198,10 @@ class SlipDetector:
             "claimed_distance_m": claimed_distance,
             "claimed_rotation_rad": claimed_rotation,
             "observed_rotation_rad": observed_rotation,
-            "gyro_rms_rps": math.sqrt(gyro_sq / span_s) if span_s > 0 else 0.0,
+            # max(..., 0) is not redundant with the monotonicity guard in add():
+            # it is the difference between this node degrading and this node
+            # killing the whole launch, and it costs nothing.
+            "gyro_rms_rps": math.sqrt(max(gyro_sq, 0.0) / span_s) if span_s > 0 else 0.0,
             "attitude_span_rad": max(
                 max(rolls) - min(rolls), max(pitches) - min(pitches), max(yaws) - min(yaws)
             ),
