@@ -27,15 +27,20 @@ RES_PX = 129
 
 
 def _write_manifest(tmp_path, surface_yx):
-    """Writes surface_yx (indexed [y, x]) out the way the generator does: transposed."""
+    """Writes surface_yx (indexed [y, x]) out the way the generator does: transposed,
+    full-range, with the real (z_min, span) that range decodes to recorded beside it."""
     png_path = tmp_path / "heightmap.png"
-    normalized = (surface_yx - surface_yx.min()) / max(surface_yx.ptp(), 1e-9)
+    z_min = float(surface_yx.min())
+    z_span = max(float(surface_yx.ptp()), 1e-9)
+    normalized = (surface_yx - z_min) / z_span
     as_uint16 = (normalized * 65535).astype(np.uint16)
     Image.fromarray(np.ascontiguousarray(as_uint16.T), mode="I;16").save(png_path)
 
     manifest = {
         "world_size_m": WORLD_SIZE_M,
         "height_range_m": HEIGHT_RANGE_M,
+        "heightmap_z_min_m": z_min,
+        "heightmap_z_span_m": z_span,
         "heightmap_png": str(png_path),
         "rocks": [],
     }
@@ -75,9 +80,9 @@ def test_asymmetric_surface_survives_the_round_trip(tmp_path):
 
     loaded = load_heightmap(manifest)
 
-    # load_heightmap rescales to [0, height_range]; compare shapes after matching that.
-    rescaled = (surface - surface.min()) / surface.ptp() * HEIGHT_RANGE_M
-    assert np.allclose(loaded, rescaled, atol=HEIGHT_RANGE_M / 65535 * 2)
+    # Absolute metres, cell for cell - no rescaling on either side. Only the 16-bit
+    # quantization of the PNG separates the two.
+    assert np.allclose(loaded, surface, atol=surface.ptp() / 65535 * 2)
 
 
 def test_lethal_fraction_cannot_detect_a_transpose(tmp_path):

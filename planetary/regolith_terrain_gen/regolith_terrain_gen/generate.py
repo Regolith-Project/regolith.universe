@@ -49,6 +49,12 @@ def generate_world(cfg: TerrainConfig, output_dir: Path, start_paused: bool = Tr
     )
 
     spawn_elevation_m = elevation_lookup(*cfg.spawn_zone_center)
-    write_manifest(output_dir / "manifest.json", cfg, craters, rocks, heightmap_png, world_sdf_path, spawn_elevation_m)
+    write_manifest(
+        output_dir / "manifest.json", cfg, craters, rocks, heightmap_png, world_sdf_path,
+        spawn_elevation_m,
+        # Same (min, span) the world SDF decodes with, so the costmap reads the PNG back
+        # at the elevations gz renders and the collision boxes use.
+        heightmap_z_min_m=heightmap_z_min, heightmap_z_span_m=heightmap_z_span,
+    )
 
     return world_sdf_path

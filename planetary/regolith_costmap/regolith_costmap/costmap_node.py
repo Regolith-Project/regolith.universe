@@ -21,7 +21,20 @@ from scipy import ndimage
 
 
 def load_heightmap(manifest: dict) -> np.ndarray:
-    """Decodes the terrain heightmap PNG into this module's [row = y, col = x] array.
+    """Decodes the terrain heightmap PNG into this module's [row = y, col = x] array,
+    in absolute metres.
+
+    The vertical decode uses the manifest's `heightmap_z_min_m` / `heightmap_z_span_m`,
+    which is what the PNG was actually encoded against (save_heightmap_png writes the
+    surface full-range, 0 -> z_min and 65535 -> z_min + span). It is deliberately NOT
+    `height_range_m`: that is the range the generator was configured to be able to use,
+    and a given seed's surface occupies less of it - 8.02 / 8.34 / 8.19 m of the
+    configured 10.0 on seeds 42 / 7 / 123. Scaling to 10.0 stretched every elevation by
+    that ratio and so overstated every slope by 1.20-1.25x, which ran the costmap at an
+    effective ~16 deg lethal threshold against the 20 deg configured. The error was
+    conservative (it over-flagged, never under-flagged), which is why it survived a full
+    milestone without ever surfacing as a failure. See PROGRESS.md "costmap decodes the
+    wrong height span".
 
     The `.T` is not cosmetic. The PNG is written in gz's axis order - its first image
     axis is world X - because that is what gz's <heightmap> requires (see
@@ -36,8 +49,21 @@ def load_heightmap(manifest: dict) -> np.ndarray:
     transpose preserves the histogram), which is exactly why it is invisible in any
     summary statistic. See PROGRESS.md "Rendered terrain was transposed".
     """
+    try:
+        z_min = manifest["heightmap_z_min_m"]
+        z_span = manifest["heightmap_z_span_m"]
+    except KeyError as exc:
+        # Fail loudly rather than falling back to height_range_m: a silent fallback would
+        # reinstate the slope overstatement above with nothing on screen to show for it.
+        # Every launch regenerates the world, so this only hits a stale cached manifest.
+        raise KeyError(
+            f"manifest is missing {exc} - it predates the heightmap z-span fix. "
+            "Regenerate the world (any launch does this, or `ros2 run regolith_terrain_gen "
+            "generate --seed N`) instead of decoding it against height_range_m."
+        ) from exc
+
     pixels = np.array(Image.open(manifest["heightmap_png"])).astype(np.float64).T
-    return pixels / pixels.max() * manifest["height_range_m"]
+    return z_min + pixels / 65535.0 * z_span
 
 
 def build_costmap(

@@ -283,11 +283,22 @@ def write_manifest(
     heightmap_png: Path,
     world_sdf: Path,
     spawn_elevation_m: float,
+    heightmap_z_min_m: float,
+    heightmap_z_span_m: float,
 ) -> None:
     manifest = {
         "seed": cfg.seed,
         "world_size_m": cfg.world_size_m,
         "height_range_m": cfg.height_range_m,
+        # The real elevations pixel 0 and pixel 65535 decode to, straight from
+        # save_heightmap_png - NOT height_range_m, which is the range the generator was
+        # ALLOWED to use, not the one this seed's surface actually occupies (typically
+        # ~8 m of the configured 10). Anyone decoding the PNG must use these: assuming
+        # height_range_m overstates every slope by span/height_range_m, which is how the
+        # costmap ran a ~16 deg effective lethal threshold against its configured 20.
+        # See PROGRESS.md "costmap decodes the wrong height span".
+        "heightmap_z_min_m": heightmap_z_min_m,
+        "heightmap_z_span_m": heightmap_z_span_m,
         "heightmap_resolution_px": cfg.heightmap_resolution_px,
         "heightmap_png": str(heightmap_png),
         "world_sdf": str(world_sdf),
