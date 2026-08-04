@@ -350,11 +350,12 @@ def _generate_and_launch(context, *args, **kwargs):
         output="screen",
         parameters=[{"use_sim_time": True}],
     )
-    if not use_visual_odometry:
+    if use_visual_odometry:
         print(
-            "[hello_moon.launch] Visual odometry DISABLED - the EKF is running on wheel "
-            "odometry and IMU alone, which cannot observe lateral slip. This is the "
-            "configuration that scored 0/3 on M4; see PROGRESS.md.",
+            "[hello_moon.launch] Visual odometry ENABLED - note this MEASURED WORSE than "
+            "leaving it off, on all three M4 acceptance seeds (EKF divergence 0.4->1.4, "
+            "0.7->24.7 and 6.1->15.2 m, same build). It is kept because the diagnosis is "
+            "specific and fixable, not because it currently helps. See PROGRESS.md.",
             flush=True,
         )
 
@@ -515,12 +516,13 @@ def generate_launch_description() -> LaunchDescription:
                             "absolute_reference_relay.py"
             ),
             DeclareLaunchArgument(
-                "visual_odometry", default_value="true",
-                description="RGB-D visual odometry feeding body-frame vx/vy to the EKF. On by "
-                            "default: it is the sensor M4 was missing, and the only thing in the "
-                            "stack that can observe lateral slip. Onboard cameras only - unlike "
-                            "localization_oracle, this is a real sensor and its results ARE "
-                            "milestone results"
+                "visual_odometry", default_value="false",
+                description="RGB-D visual odometry feeding body-frame vy to the EKF. OFF by "
+                            "default because a controlled comparison measured it making "
+                            "localization WORSE on all three acceptance seeds (EKF divergence "
+                            "0.4->1.4, 0.7->24.7 and 6.1->15.2 m, same build, oracle off). It is "
+                            "a real onboard sensor, not an oracle, so its results would be "
+                            "milestone results - they are just bad ones. See PROGRESS.md"
             ),
             DeclareLaunchArgument(
                 "headless", default_value="false",
