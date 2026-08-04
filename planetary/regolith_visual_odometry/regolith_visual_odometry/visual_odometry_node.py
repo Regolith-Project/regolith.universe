@@ -114,6 +114,7 @@ class VisualOdometryNode(Node):
         # the depth topic. Found the hard way on the first live run.
         self.refusals: dict[str, int] = {}
         self.last_inliers = 0
+        self.mask_fractions: list[float] = []
 
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
@@ -205,6 +206,7 @@ class VisualOdometryNode(Node):
         self.keyframe = (gray, depth, stamp_s)
 
     def _publish(self, estimate, stamp) -> None:
+        self.mask_fractions.append(estimate.mask_fraction)
         msg = Odometry()
         msg.header.stamp = stamp
         msg.header.frame_id = "odom"
@@ -243,9 +245,12 @@ class VisualOdometryNode(Node):
             )
             return
         detail = ", ".join(f"{reason} x{count}" for reason, count in sorted(self.refusals.items()))
+        recent = self.mask_fractions[-50:]
+        coverage = 100.0 * sum(recent) / len(recent) if recent else 0.0
         message = (
             f"Visual odometry: {self.n_published}/{total} frame pairs used "
-            f"(last estimate had {self.last_inliers} inliers)."
+            f"(last estimate had {self.last_inliers} inliers; depth mask covers "
+            f"{coverage:.0f}% of recent frames)."
         )
         if self.refusals:
             message += f" Refused: {detail}."

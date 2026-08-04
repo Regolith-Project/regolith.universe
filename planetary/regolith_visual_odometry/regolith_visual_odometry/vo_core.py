@@ -91,7 +91,25 @@ class VoConfig:
     # lens-adjacent noise; the far bound matters more than it looks - distant
     # points carry almost no parallax, so their depth error dominates the metric
     # scale while contributing nothing to observing translation.
-    min_depth_m: float = 0.4
+    # 0.15, not the 0.4 this started at. This camera looks mostly at ground close
+    # in front of the wheels - the median depth over 873 real frames is 0.214 m -
+    # so a 0.4 m floor discards most of what it can see. Measured mask coverage
+    # (the fraction of the image a feature is allowed to be found in):
+    #
+    #     min_depth      all frames      the 40 frames closest to an obstacle
+    #       0.40 m         31.8%                      4.2%
+    #       0.15 m         55.3%                     13.4%
+    #
+    # The right-hand column is the point. An M4 acceptance seed went blind for
+    # three quarters of its run - 2759 consecutive refusals for "too few tracked
+    # features" - and close quarters is where that happens, because a rover nosed
+    # up against a boulder sees nothing BUT near ground. Accuracy is unchanged by
+    # the change (vy error +0.000 +- 0.018 at 0.4 m against -0.000 +- 0.020 at
+    # 0.15), so this costs nothing measurable and triples the search area exactly
+    # where it ran out. Whether it actually cures that blindness is not yet
+    # established - the frames measured here contain no fully-blind case, which is
+    # why mask coverage is now reported per run.
+    min_depth_m: float = 0.15
     max_depth_m: float = 15.0
     # Below this many RANSAC inliers the estimate is not trusted at all. Six is
     # the algebraic minimum for PnP; this sits well above it because near the
@@ -112,6 +130,14 @@ class VoConfig:
     # Floor on the reported velocity sigma, so a scene that happens to fit well
     # can never claim to be better than the sensor model actually is.
     min_velocity_sigma_mps: float = 0.02
+    # Nothing this rover does is faster than this. Its commanded cruise is 0.2 m/s
+    # and its recovery maneuvers reverse at 0.2 m/s, so a "measurement" of 1 m/s is
+    # not a measurement of this vehicle - it is a solver artifact wearing a
+    # velocity's clothes, and the reprojection gate above does not catch every one
+    # (the catastrophic cases measured ran to 46 m/s). A sensor that knows what it
+    # is mounted to should refuse to report the physically impossible, and this is
+    # the cheapest guard in the file.
+    max_speed_mps: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -132,10 +158,17 @@ class VoEstimate:
     n_tracked: int
     n_inliers: int
     reprojection_rms_px: float
+    # Fraction of the image the depth mask allowed features to be found in. The
+    # single most useful number when this package produces nothing: it separates
+    # "the camera has no range here" (mask near zero - nosed into an obstacle, or
+    # staring at sky) from "there is range but no texture", which are different
+    # problems with different fixes and used to be indistinguishable in the logs.
+    mask_fraction: float = 0.0
     reason: str = ""
 
 
-def _invalid(reason: str, n_tracked: int = 0, n_inliers: int = 0) -> VoEstimate:
+def _invalid(reason: str, n_tracked: int = 0, n_inliers: int = 0,
+             mask_fraction: float = 0.0) -> VoEstimate:
     return VoEstimate(
         valid=False,
         linear_mps=np.zeros(3),
@@ -144,6 +177,7 @@ def _invalid(reason: str, n_tracked: int = 0, n_inliers: int = 0) -> VoEstimate:
         n_tracked=n_tracked,
         n_inliers=n_inliers,
         reprojection_rms_px=float("nan"),
+        mask_fraction=mask_fraction,
         reason=reason,
     )
 
@@ -282,17 +316,26 @@ def estimate_motion(
     prev_view, cur_view = enhance(prev_gray, cfg), enhance(cur_gray, cfg)
     # Look for features only where the depth camera has something to say - see
     # usable_depth_mask, without which the detector spends its budget on the sky.
-    corners = detect_features(prev_view, cfg, usable_depth_mask(prev_depth, cfg))
+    mask = usable_depth_mask(prev_depth, cfg)
+    mask_fraction = float(mask.mean())
+    if mask_fraction < 0.01:
+        # Reported separately from "no texture": there is nowhere to look at all,
+        # which means the camera is against something or pointed at empty sky.
+        return _invalid("no usable depth anywhere in frame", mask_fraction=mask_fraction)
+
+    corners = detect_features(prev_view, cfg, mask)
     prev_xy, cur_xy = track_features(prev_view, cur_view, corners, cfg)
     n_tracked = len(prev_xy)
     if n_tracked < cfg.min_inliers:
-        return _invalid("too few tracked features", n_tracked=n_tracked)
+        return _invalid("too few tracked features", n_tracked=n_tracked,
+                        mask_fraction=mask_fraction)
 
     depths = sample_depth(prev_depth, prev_xy)
     usable = np.isfinite(depths) & (depths >= cfg.min_depth_m) & (depths <= cfg.max_depth_m)
     prev_xy, cur_xy, depths = prev_xy[usable], cur_xy[usable], depths[usable]
     if len(prev_xy) < cfg.min_inliers:
-        return _invalid("too few features with usable depth", n_tracked=n_tracked)
+        return _invalid("too few features with usable depth", n_tracked=n_tracked,
+                        mask_fraction=mask_fraction)
 
     object_points = back_project(prev_xy, depths, k_matrix)
     ok, rvec, tvec, inliers = cv2.solvePnPRansac(
@@ -306,7 +349,8 @@ def estimate_motion(
     )
     if not ok or inliers is None or len(inliers) < cfg.min_inliers:
         n_in = 0 if inliers is None else len(inliers)
-        return _invalid("PnP found no consensus", n_tracked=n_tracked, n_inliers=n_in)
+        return _invalid("PnP found no consensus", n_tracked=n_tracked, n_inliers=n_in,
+                        mask_fraction=mask_fraction)
 
     inliers = inliers.ravel()
     projected, _ = cv2.projectPoints(object_points[inliers], rvec, tvec, k_matrix, None)
@@ -317,6 +361,7 @@ def estimate_motion(
             "solved pose does not reproject its own inliers",
             n_tracked=n_tracked,
             n_inliers=len(inliers),
+            mask_fraction=mask_fraction,
         )
 
     rotation_points, _ = cv2.Rodrigues(rvec)
@@ -335,6 +380,14 @@ def estimate_motion(
     # Lever arm: the camera is not at base_link, so yaw alone moves it.
     linear_mps = camera_linear_mps - np.cross(angular_rps, camera_offset_in_base_m)
 
+    if float(np.linalg.norm(linear_mps[:2])) > cfg.max_speed_mps:
+        return _invalid(
+            "recovered speed is impossible for this rover",
+            n_tracked=n_tracked,
+            n_inliers=len(inliers),
+            mask_fraction=mask_fraction,
+        )
+
     return VoEstimate(
         valid=True,
         linear_mps=linear_mps,
@@ -345,6 +398,7 @@ def estimate_motion(
         n_tracked=n_tracked,
         n_inliers=len(inliers),
         reprojection_rms_px=reprojection_rms,
+        mask_fraction=mask_fraction,
     )
 
 

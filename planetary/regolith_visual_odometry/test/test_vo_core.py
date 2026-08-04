@@ -333,3 +333,57 @@ def test_a_zero_interval_is_not_a_measurement():
     )
 
     assert not estimate.valid
+
+
+def test_a_frame_with_no_range_anywhere_says_so_specifically():
+    """"No depth here" and "no texture here" are different problems.
+
+    They used to produce the same message, and that cost real time: an M4
+    acceptance seed refused 2759 consecutive frame pairs for "too few tracked
+    features", which reads as a barren landscape but is equally consistent with a
+    camera pressed against a boulder seeing nothing but out-of-range near ground.
+    Telling them apart is the difference between tuning the detector and tuning
+    the depth band.
+    """
+    k_matrix = _intrinsics()
+    texture, relief = _random_field(0), _random_field(100, cells=120)
+    gray, _ = _render(np.zeros(3), 0.0, k_matrix, texture, relief)
+    everything_too_close = np.full((HEIGHT, WIDTH), 0.02, np.float32)
+
+    estimate = estimate_motion(
+        gray, everything_too_close, gray, k_matrix, DT_S,
+        _rot_y(CAMERA_PITCH_RAD), CAMERA_OFFSET_M, VoConfig(),
+    )
+
+    assert not estimate.valid
+    assert "no usable depth" in estimate.reason
+    assert estimate.mask_fraction < 0.01
+
+
+def test_a_physically_impossible_speed_is_refused():
+    """The rover cruises at 0.2 m/s; a solver artifact reporting metres per second
+    is not a measurement of it.
+
+    The reprojection gate catches most bad solves but not all - the catastrophic
+    cases measured on real frames ran to 46 m/s. A sensor that knows what vehicle
+    it is bolted to can refuse the impossible outright, so this pins that it does.
+    Driven through the real code path by making the frame interval implausibly
+    short, which inflates any recovered displacement into a huge velocity.
+    """
+    k_matrix = _intrinsics()
+    texture, relief = _random_field(0), _random_field(100, cells=120)
+    prev_gray, prev_depth = _render(np.zeros(3), 0.0, k_matrix, texture, relief)
+    cur_gray, _ = _render(np.array([0.08, 0.0, 0.0]), 0.0, k_matrix, texture, relief)
+
+    plausible = estimate_motion(
+        prev_gray, prev_depth, cur_gray, k_matrix, 0.4,
+        _rot_y(CAMERA_PITCH_RAD), CAMERA_OFFSET_M, VoConfig(),
+    )
+    absurd = estimate_motion(
+        prev_gray, prev_depth, cur_gray, k_matrix, 0.004,
+        _rot_y(CAMERA_PITCH_RAD), CAMERA_OFFSET_M, VoConfig(),
+    )
+
+    assert plausible.valid, plausible.reason
+    assert not absurd.valid
+    assert "impossible" in absurd.reason
