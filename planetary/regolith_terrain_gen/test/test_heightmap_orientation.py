@@ -1,18 +1,17 @@
 # Copyright 2026 Regolith Project contributors
 # SPDX-License-Identifier: Apache-2.0
-"""Regression test for the "rocks float in the air" bug (see PROGRESS.md).
+"""The heightmap PNG's axis convention and z encoding (see PROGRESS.md).
 
 gz maps a heightmap image's first axis to world X and its second to world Y. Every array
-in heightmap.py is indexed [row = y, col = x]. So the PNG handed to gz must be the
-TRANSPOSE of the array, or the terrain renders mirrored about the x = y diagonal while
-collision geometry and elevation_lookup stay in the array's own convention - which is
-exactly what left rocks hanging in mid-air over ground that was drawn somewhere else.
+in heightmap.py is indexed [row = y, col = x]. So the PNG must be written as the
+TRANSPOSE of the array, or it describes the terrain mirrored about the x = y diagonal.
+Getting that wrong once left rocks hanging in mid-air over ground drawn somewhere else.
 
-The reason this went unnoticed for so long is that every previous check compared arrays
-against arrays. The collision boxes, elevation_lookup and the visual array are all built
-in this module's convention, so they all agreed with each other and with the rocks; only
-the pixels gz actually rendered disagreed. These tests therefore assert on the ENCODED
-FILE, which is the one artefact that crosses into gz's convention.
+The PNG is no longer what gets DRAWN - the ground ships as a mesh now, see
+terrain_mesh.py - but it is still the elevation source ``regolith_costmap`` plans
+against, so a mirrored or mis-scaled PNG would now show up as the planner avoiding
+obstacles that are somewhere else. The convention it is written in is gz's, so these
+tests still assert on the ENCODED FILE rather than on any in-memory array.
 """
 
 import numpy as np
@@ -71,12 +70,20 @@ def test_a_spike_lands_at_the_right_world_position(tmp_path):
     assert abs(got_y - spike_y) < 1.0, f"spike rendered at y={got_y:.1f}, expected {spike_y}"
 
 
-def test_rendered_surface_matches_elevation_lookup(tmp_path):
-    """The property that actually matters: the ground gz draws under any (x, y) is the
-    ground elevation_lookup reports there - which is what rocks are seated on."""
+def test_decoded_png_matches_the_visual_surface(tmp_path):
+    """Decoding the PNG the way a consumer does must give back the surface that was
+    encoded, at the right world (x, y).
+
+    This used to compare against ``elevation_lookup``, back when the PNG was also the
+    drawn ground. It no longer is: the ground is a mesh, and elevation_lookup evaluates
+    THAT (see terrain_mesh.py), so the two legitimately differ by the mesh's decimation.
+    What is still worth pinning here is the encoding itself - orientation, full-range
+    stretch, z mapping - because the costmap decodes this file. Rock seating against the
+    drawn ground is covered in test_rock_seating_against_drawn_terrain.py.
+    """
     cfg = TerrainConfig(seed=7)
     rng = np.random.default_rng(cfg.seed)
-    _, visual, _, elevation_lookup = build_heightmap(cfg, rng)
+    _, visual, _, _ = build_heightmap(cfg, rng)
 
     png = tmp_path / "hm.png"
     z_min, z_span = save_heightmap_png(visual, png)
@@ -86,17 +93,14 @@ def test_rendered_surface_matches_elevation_lookup(tmp_path):
     ppm = (n - 1) / cfg.world_size_m
     half = cfg.world_size_m / 2.0
 
-    # Sample at exact heightmap POSTS. elevation_lookup interpolates bilinearly between
-    # posts (as gz does when it draws the surface), and this test is about the encoding -
-    # orientation, full-range stretch, z mapping - not about interpolation, so comparing
-    # at posts isolates the thing under test: on a post, bilinear reduces to the post's
-    # own value and any difference left is the encoding.
+    # Sample at exact heightmap POSTS, so no interpolation enters and any difference
+    # left is the encoding - which is the thing under test.
     worst = 0.0
     rng2 = np.random.default_rng(0)
     for _ in range(400):
         i, j = rng2.integers(1, n - 1, size=2)
-        x = i / ppm - half
-        y = j / ppm - half
-        worst = max(worst, abs(float(decoded[i, j]) - elevation_lookup(x, y)))
+        # decoded is in gz's convention (axis 0 = world x), visual is in this module's
+        # (row = y), so the indices swap. That swap IS the transpose under test.
+        worst = max(worst, abs(float(decoded[i, j]) - float(visual[j, i])))
     # Same post, same surface: only 16-bit quantisation should remain.
-    assert worst < 0.01, f"rendered ground differs from elevation_lookup by up to {worst:.4f} m"
+    assert worst < 0.01, f"decoded PNG differs from the encoded surface by up to {worst:.4f} m"

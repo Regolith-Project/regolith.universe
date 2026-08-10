@@ -2,35 +2,38 @@
 # SPDX-License-Identifier: Apache-2.0
 """Do the rocks float? Asked of the SHIPPED ARTEFACTS, not of the generator's helpers.
 
-The "floating rocks" report has now come back three times, and each time the test that
-was supposed to cover it passed. The reason is always the same shape of mistake: the
-check sampled the terrain through ``elevation_lookup``, which is the very function
-``scatter.seat_rock_z`` seats the rocks with. Two things measured through one convention
-agree with each other no matter how wrong that convention is - it stayed green through
-the PNG being written transposed, and through the seating sampling a different surface
-from the one gz interpolates.
+The "floating rocks" report has now come back four times, and each time the test that
+was supposed to cover it passed. The mistakes have a family resemblance: the check kept
+sampling a terrain that was not the one being drawn.
 
-So nothing here touches ``elevation_lookup``, ``build_heightmap`` or the in-memory
-surface. Everything is read back off what ``generate_world`` actually wrote to disk, and
-decoded the way gz decodes it:
+  1. It sampled ``elevation_lookup`` - the very function ``scatter.seat_rock_z`` seats
+     rocks with. Two things measured through one convention agree no matter how wrong
+     that convention is, so it stayed green through the PNG being written transposed.
+  2. Repointed at ``heightmap.png``, it went green again - and this time correctly, as
+     far as it went: the PNG really did describe a surface every rock sat on. What it
+     could not see is that gz did not DRAW that surface at range. A ``<heightmap>``
+     visual goes through Ogre-Next's Terra, which point-samples the terrain coarser the
+     further it is from the camera. The data was right and the picture was wrong.
 
-  * ``heightmap.png`` + the ``<pos>``/``<size>`` in ``world.sdf`` -> the drawn surface,
-    transposed back out of gz's axis order and stretched full-range, then sampled
-    BILINEARLY between posts, which is how the renderer fills the space between them.
+The ground is now a mesh (see ``terrain_mesh.py``), which has no level of detail - so
+for the first time there is one artefact that is unambiguously both the data and the
+picture, and this file reads exactly that:
+
+  * ``terrain.obj`` -> the triangles gz draws the ground from, in world coordinates,
+    sampled the way a triangle is and not as a bilinear patch.
   * ``rocks/<variant>.obj`` -> the actual triangles gz renders for each boulder.
   * ``manifest.json`` -> where each rock instance was placed.
 
-If any of the encoding, the axis convention, the z mapping, the mesh export or the
-seating maths drifts, a rock leaves the ground here and this fails.
+Nothing here touches ``elevation_lookup``, ``build_heightmap`` or any in-memory array.
 
-Verified against the real renderer while this was written: a top-down camera frame from
-30 m shows every boulder's shadow attached to its silhouette, which at the world's 12 deg
-sun elevation would separate by 4.7x any gap under the rock.
+A geometry test still cannot see a rendering artefact, which is the trap this file fell
+into last time. That gap is now covered separately and directly, by screenshotting the
+real GUI and looking for sky underneath a boulder - see
+``test_rendered_terrain_seats_rocks.py``.
 """
 
 import json
 import math
-import re
 from pathlib import Path
 
 import numpy as np
@@ -41,41 +44,48 @@ from regolith_terrain_gen.generate import generate_world
 
 SEEDS = [42, 7, 123]
 
-# A rock may not hang in the air at all. The small positive allowance is 16-bit PNG
-# quantisation over the height span (8 m / 65535 ~ 0.12 mm) plus float noise, not
-# tolerance for a visible gap.
+# A rock may not hang in the air at all. The small positive allowance is float noise in
+# the OBJ's 4-decimal coordinates, not tolerance for a visible gap.
 MAX_FLOAT_M = 0.002
 
 
 def _drawn_surface(world_dir: Path):
-    """The terrain gz actually draws, decoded from the files exactly as gz decodes them."""
-    sdf = (world_dir / "world.sdf").read_text()
-    visual = sdf[sdf.index('<visual name="terrain_visual">'):]
-    size = [float(v) for v in re.search(r"<size>([-\d.eE ]+)</size>", visual).group(1).split()]
-    pos = [float(v) for v in re.search(r"<pos>([-\d.eE ]+)</pos>", visual).group(1).split()]
-    world_m, z_span, z_min = size[0], size[2], pos[2]
+    """The ground gz actually draws, rebuilt from the terrain mesh on disk.
 
-    from PIL import Image
+    Parses ``terrain.obj`` without assuming how it was written: vertices are read as
+    world coordinates and the grid is recovered from them, so a wrong axis, a wrong
+    scale or a dropped row surfaces here instead of being reproduced.
+    """
+    verts = np.array([
+        [float(t) for t in line.split()[1:4]]
+        for line in (world_dir / "terrain.obj").read_text().splitlines()
+        if line.startswith("v ")
+    ])
+    assert len(verts), "terrain.obj has no vertices"
 
-    # .T undoes gz's axis order (first image axis is world X) so this is [row=y, col=x].
-    pixels = np.array(Image.open(world_dir / "heightmap.png")).astype(np.float64).T
-    surface = pixels / 65535.0 * z_span + z_min
-
-    n = surface.shape[0]
-    half = world_m / 2.0
-    per_m = (n - 1) / world_m
+    xs = np.unique(verts[:, 0])
+    ys = np.unique(verts[:, 1])
+    assert len(xs) * len(ys) == len(verts), "terrain.obj is not a regular grid of posts"
+    grid = np.full((len(ys), len(xs)), np.nan)
+    grid[np.searchsorted(ys, verts[:, 1]), np.searchsorted(xs, verts[:, 0])] = verts[:, 2]
+    assert not np.isnan(grid).any(), "terrain.obj leaves holes in its grid"
 
     def sample(x_m, y_m):
-        fx = np.clip((np.asarray(x_m) + half) * per_m, 0, n - 1)
-        fy = np.clip((np.asarray(y_m) + half) * per_m, 0, n - 1)
-        x0 = np.floor(fx).astype(int)
-        y0 = np.floor(fy).astype(int)
-        x1 = np.minimum(x0 + 1, n - 1)
-        y1 = np.minimum(y0 + 1, n - 1)
-        tx, ty = fx - x0, fy - y0
-        return (
-            surface[y0, x0] * (1 - tx) * (1 - ty) + surface[y0, x1] * tx * (1 - ty)
-            + surface[y1, x0] * (1 - tx) * ty + surface[y1, x1] * tx * ty
+        x = np.clip(np.asarray(x_m, dtype=float), xs[0], xs[-1])
+        y = np.clip(np.asarray(y_m, dtype=float), ys[0], ys[-1])
+        cx = np.clip(np.searchsorted(xs, x, side="right") - 1, 0, len(xs) - 2)
+        cy = np.clip(np.searchsorted(ys, y, side="right") - 1, 0, len(ys) - 2)
+        u = (x - xs[cx]) / (xs[cx + 1] - xs[cx])
+        v = (y - ys[cy]) / (ys[cy + 1] - ys[cy])
+        za, zb = grid[cy, cx], grid[cy, cx + 1]
+        zc, zd = grid[cy + 1, cx + 1], grid[cy + 1, cx]
+        # Each quad is two triangles split on the a->c diagonal, i.e. u == v. A rock
+        # rests on a triangle, not on a bilinear patch, and the difference between the
+        # two is exactly the sub-post detail that has hidden this bug before.
+        return np.where(
+            v <= u,
+            za + (zb - za) * u + (zc - zb) * v,
+            za + (zd - za) * v + (zc - zd) * u,
         )
 
     return sample
@@ -137,8 +147,8 @@ def test_no_rock_hangs_above_the_drawn_ground(tmp_path, seed):
     assert not floating.any(), (
         f"seed {seed}: {floating.sum()} of {len(gaps)} rocks hang above the surface gz "
         f"draws (worst {gaps.max():.3f} m). This is the check that measures the shipped "
-        f"PNG and OBJ rather than the generator's own elevation_lookup - if the placement "
-        f"tests still pass, the two surfaces have diverged."
+        f"terrain.obj and rock OBJs rather than the generator's own elevation_lookup - "
+        f"if the placement tests still pass, the two surfaces have diverged."
     )
 
 

@@ -184,24 +184,18 @@ def _gui_camera_pose(cfg: TerrainConfig, elevation_lookup=None) -> str:
 
 def build_world_sdf(
     cfg: TerrainConfig,
-    heightmap_png: Path,
     texture_pngs: dict,
     rocks: list,
     rock_mesh_dir: Path,
     terrain_collision_sdf: str,
-    heightmap_z_min: float = 0.0,
-    heightmap_z_span: float = None,
+    terrain_mesh_obj: Path,
     elevation_lookup=None,
     start_paused: bool = True,
 ) -> str:
-    # gz stretches the heightmap PNG's own pixel min/max to fill <size> z, rendering the
-    # lowest pixel at <pos> z and the highest at <pos> z + <size> z. save_heightmap_png
-    # emits a full-range PNG and reports the real-world (min, span) it corresponds to;
-    # feeding those straight into <pos> z / <size> z makes gz reproduce the true absolute
-    # elevations, so the drawn ground coincides with the collision boxes. Falls back to
-    # the old fixed [0, height_range_m] framing only if a caller omits them.
-    if heightmap_z_span is None:
-        heightmap_z_span = cfg.height_range_m
+    # No heightmap_png / z_min / z_span here any more: the ground is drawn from
+    # terrain_mesh_obj, which carries its own absolute world coordinates. The PNG's
+    # min/max-stretch encoding still matters - it is how the costmap decodes elevations -
+    # but it is no longer part of the world SDF. See save_heightmap_png and terrain_mesh.
     dx, dy, dz = _sun_direction(cfg.sun_elevation_deg, cfg.sun_azimuth_deg)
     camera_pose = _gui_camera_pose(cfg, elevation_lookup)
 
@@ -245,25 +239,39 @@ def build_world_sdf(
     <model name="moon_terrain">
       <static>true</static>
       <link name="terrain_link">
-        <!-- Collision is a box grid approximating the terrain, not the <heightmap>
-             geometry type used for the visual below: both <heightmap> and <mesh>
-             collision construction from SDF are unimplemented for dartsim/bullet/
-             bullet-featherstone in this gz-physics 7.8.0 install (verified
-             empirically across all three engines - see heightmap.py). -->
+        <!-- Collision is a box grid approximating the terrain, and NOT the mesh used
+             for the visual below: both <heightmap> and <mesh> collision construction
+             from SDF are unimplemented for dartsim/bullet/bullet-featherstone in this
+             gz-physics 7.8.0 install (verified empirically across all three engines -
+             see heightmap.py). The visual being free of physics duty is what made
+             swapping it for a mesh a purely rendering-side change. -->
 {terrain_collision_sdf}
+        <!-- The ground is a MESH, not a <heightmap>. A <heightmap> visual is drawn by
+             Ogre-Next's Terra, which point-samples it coarser the further it is from
+             the camera; the rocks standing on it are meshes and keep their exact
+             placement, so at the horizon they hang visibly in the air while every
+             placement test - all of which grade the data on disk - stays green. A
+             <mesh> has no LOD in this stack and is drawn as authored at every range.
+             See terrain_mesh.py for the measurement. heightmap.png is still written
+             and still ships; the costmap reads it, but it is no longer drawn. -->
         <visual name="terrain_visual">
           <geometry>
-            <heightmap>
-              <uri>file://{heightmap_png}</uri>
-              <size>{cfg.world_size_m} {cfg.world_size_m} {heightmap_z_span:.6f}</size>
-              <pos>0 0 {heightmap_z_min:.6f}</pos>
-              <texture>
-                <diffuse>file://{texture_pngs['albedo']}</diffuse>
-                <normal>file://{texture_pngs['normal']}</normal>
-                <size>{cfg.texture_tile_size_m:g}</size>
-              </texture>
-            </heightmap>
+            <mesh>
+              <uri>file://{terrain_mesh_obj}</uri>
+            </mesh>
           </geometry>
+          <material>
+            <diffuse>1 1 1 1</diffuse>
+            <specular>0.05 0.05 0.05 1</specular>
+            <pbr>
+              <metal>
+                <albedo_map>file://{texture_pngs['albedo']}</albedo_map>
+                <normal_map>file://{texture_pngs['normal']}</normal_map>
+                <roughness_map>file://{texture_pngs['roughness']}</roughness_map>
+                <metalness>0.0</metalness>
+              </metal>
+            </pbr>
+          </material>
         </visual>
       </link>
     </model>
@@ -285,6 +293,8 @@ def write_manifest(
     spawn_elevation_m: float,
     heightmap_z_min_m: float,
     heightmap_z_span_m: float,
+    terrain_mesh_obj: Path,
+    terrain_mesh_stats: dict,
 ) -> None:
     manifest = {
         "seed": cfg.seed,
@@ -301,6 +311,11 @@ def write_manifest(
         "heightmap_z_span_m": heightmap_z_span_m,
         "heightmap_resolution_px": cfg.heightmap_resolution_px,
         "heightmap_png": str(heightmap_png),
+        # The geometry that is actually DRAWN, and the surface anything standing on the
+        # ground is seated against. heightmap_png above is the same surface sampled at
+        # every post, kept for the costmap; the mesh is what gz renders.
+        "terrain_mesh_obj": str(terrain_mesh_obj),
+        "terrain_mesh": terrain_mesh_stats,
         "world_sdf": str(world_sdf),
         "spawn_zone": {
             "x_m": cfg.spawn_zone_center[0],

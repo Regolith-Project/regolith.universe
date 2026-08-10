@@ -21,6 +21,8 @@
   <exec_depend>nav_msgs</exec_depend>
   <exec_depend>std_msgs</exec_depend>
   <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>visualization_msgs</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
   <exec_depend>xacro</exec_depend>
   <exec_depend>regolith_costmap</exec_depend>
   <exec_depend>regolith_planner</exec_depend>

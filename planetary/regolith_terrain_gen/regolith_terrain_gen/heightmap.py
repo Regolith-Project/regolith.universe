@@ -10,6 +10,7 @@ from PIL import Image
 from regolith_terrain_gen.config import TerrainConfig
 from regolith_terrain_gen.craters import apply_craters, place_craters
 from regolith_terrain_gen.noise import fbm
+from regolith_terrain_gen.terrain_mesh import mesh_surface_lookup
 
 
 def build_heightmap(cfg: TerrainConfig, rng: np.random.Generator) -> tuple:
@@ -73,31 +74,15 @@ def build_heightmap(cfg: TerrainConfig, rng: np.random.Generator) -> tuple:
         _synthesize_visual_heightmap(heightmap, cfg, grid), 0.0, cfg.height_range_m
     )
 
-    def elevation_lookup(x_m: float, y_m: float) -> float:
-        """BILINEAR, because that is how gz draws the surface between heightmap posts.
-
-        This used to take the nearest post. Everything that seats an object on the ground
-        goes through here, so anything landing between posts was placed on a surface up to
-        one pixel's worth of relief ABOVE the one being rendered - measured across seeds
-        42/7/123 at the shipped 0.39 m post spacing, a mean of 0.016 m but a worst case of
-        0.35 m. A rock is seated off the single highest of its ~40 vertices, so it picks up
-        the worst such overshoot rather than the mean, and then hangs that far in the air.
-        That is the residual "floating rocks" left after the seating and transpose fixes,
-        and it is invisible to any test that samples the terrain through this same
-        function - see test_rock_seating_against_rendered_png.py, which deliberately does
-        not.
-        """
-        fx = float(np.clip((x_m + half_world) * px_per_m, 0, n - 1))
-        fy = float(np.clip((y_m + half_world) * px_per_m, 0, n - 1))
-        x0, y0 = int(fx), int(fy)
-        x1, y1 = min(x0 + 1, n - 1), min(y0 + 1, n - 1)
-        tx, ty = fx - x0, fy - y0
-        return float(
-            visual_heightmap[y0, x0] * (1 - tx) * (1 - ty)
-            + visual_heightmap[y0, x1] * tx * (1 - ty)
-            + visual_heightmap[y1, x0] * (1 - tx) * ty
-            + visual_heightmap[y1, x1] * tx * ty
-        )
+    # Evaluated on the triangles of the terrain MESH - the geometry gz actually draws
+    # (see terrain_mesh.py for why the ground is a mesh and not a <heightmap>). Everything
+    # that seats an object on the ground goes through here, so this has to be the drawn
+    # surface and nothing else. Its two predecessors were both a different surface from
+    # the drawn one and both showed up as floating rocks: first the NEAREST heightmap
+    # post (up to 0.35 m above what gz interpolated between posts), then a BILINEAR
+    # sample of every post (correct for a <heightmap>, but a mesh is piecewise-linear
+    # over its own, sparser posts).
+    elevation_lookup = mesh_surface_lookup(visual_heightmap, cfg)
 
     return heightmap, visual_heightmap, craters, elevation_lookup
 

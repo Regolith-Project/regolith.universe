@@ -38,14 +38,31 @@ those packages rather than in the `regolith` meta-repo.
   with `rviz:=false`) and adds a `mission` argument:
   `ros2 launch regolith_bringup hello_moon.launch.py seed:=42` behaves
   like `autonomous_demo.launch.py` (click a goal yourself in RViz);
-  `... mission:=tour` additionally runs `tour_mission.py`, a scripted
-  5-waypoint loop, with no interaction needed. This is what
+  `... mission:=tour` additionally runs `tour_mission.py`, a 5-waypoint
+  loop, with no interaction needed. The route is **derived from the live
+  `/costmap`** rather than hardcoded (see `regolith_planner/tour.py`):
+  every waypoint is somewhere the planner will accept, every leg is checked
+  with the same A* that will drive it, and legs are chosen to cross terrain
+  the rover has to route around. Deterministic from `seed`. This is what
   `scripts/demo.sh` in the meta-repo launches. See PROGRESS.md M5 for the
   current state, including a confirmed instance of the M4 flip issue
   occurring during an unattended tour run (also since fixed - see above).
   Pass `headless:=true` to skip the Gazebo GUI window entirely (server-only,
   `-s`) for unattended/automated runs - distinct from `rviz:=false`, which
   only skips RViz.
+
+  `mission_markers_node.py` flags the start point and the mission's goals in
+  **both** windows - a green flag where the rover set off, an amber one at
+  each planned waypoint, and a taller red one that follows whichever goal is
+  currently live; RViz gets the same set as a labelled `MarkerArray` on
+  `/mission_markers`. Disable with `markers:=false`. The flags have no
+  collision and nothing in the control loop reads them, so the rover drives
+  straight through them.
+
+  Note the frames: goals are published in `odom`, the Gazebo flags stand in
+  the world frame, and the two share an origin at the spawn point. A rover
+  parked visibly short of a flag while reporting the goal reached is showing
+  you its localisation error, not a misplaced flag.
 
   Pass `record_video:=true` to record the onboard camera straight to an mp4
   via gz-sim's server-side `CameraVideoRecorder` plugin - this bypasses the

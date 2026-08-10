@@ -1,3 +1,7 @@
+# Every display carries an explicit `Enabled:`. Without it rviz2 loads the display but
+# leaves its checkbox CLEAR, which is why this config used to open with a completely
+# empty 3D view and every entry unticked - recorded in PROGRESS.md as an unexplained
+# oddity in a screenshot, and it was this. Do not drop the flag when adding a display.
 Panels:
   - Class: rviz_common/Displays
     Name: Displays
@@ -8,31 +12,37 @@ Visualization Manager:
     - Alpha: 0.5
       Cell Size: 1
       Class: rviz_default_plugins/Grid
+      Enabled: true
       Color: 160; 160; 164
       Name: Grid
       Reference Frame: <Fixed Frame>
     - Class: rviz_default_plugins/TF
+      Enabled: true
       Name: TF
       Show Names: true
       Show Axes: true
       Marker Scale: 0.3
     - Class: rviz_default_plugins/RobotModel
+      Enabled: true
       Name: RobotModel
       Description Topic:
         Value: /robot_description
       TF Prefix: ""
     - Class: rviz_default_plugins/Image
+      Enabled: true
       Name: Camera
       Topic:
         Value: /camera/image
     - Alpha: 0.6
       Class: rviz_default_plugins/Map
+      Enabled: true
       Color Scheme: costmap
       Name: Costmap
       Topic:
         Durability Policy: Transient Local
         Value: /costmap
     - Class: rviz_default_plugins/Path
+      Enabled: true
       Color: 25; 255; 25
       Line Style: Billboards
       Line Width: 0.15
@@ -40,11 +50,29 @@ Visualization Manager:
       Topic:
         Durability Policy: Transient Local
         Value: /planned_path
+    # Start flag, the mission's planned goals, and whichever one is live - the same
+    # three things mission_markers_node.py flags in Gazebo. Transient Local so the
+    # markers are there when RViz starts late, which it usually does.
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Name: MissionMarkers
+      Namespaces: {}
+      Topic:
+        Durability Policy: Transient Local
+        Value: /mission_markers
     - Class: rviz_default_plugins/Odometry
+      Enabled: true
       Name: EKF Estimate
       Topic:
         Value: /odometry/filtered
       Keep: 200
+      Covariance:
+        Value: false
+      Shape:
+        Shaft Length: 0.4
+        Shaft Radius: 0.05
+        Head Length: 0.15
+        Head Radius: 0.1
     - Class: rviz_default_plugins/Odometry
       Enabled: false
       Name: Wheel Odometry
@@ -63,12 +91,14 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz_default_plugins/Orbit
-      Distance: 12
+      # Wide enough to hold the whole tour - the waypoints reach ~18 m out, and at the
+      # old Distance: 12 the goal flags sat outside the view the demo opens with.
+      Distance: 45
       Focal Point:
-        X: 0
+        X: 4
         Y: 0
         Z: 0
-      Pitch: 0.6
+      Pitch: 0.7
       Yaw: 0.8
 Window Geometry:
   Height: 900

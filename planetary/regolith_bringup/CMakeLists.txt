@@ -10,6 +10,7 @@ install(PROGRAMS
   scripts/flip_recovery_node.py
   scripts/wheel_slip_node.py
   scripts/absolute_reference_relay.py
+  scripts/mission_markers_node.py
   DESTINATION lib/${PROJECT_NAME})
 
 ament_package()

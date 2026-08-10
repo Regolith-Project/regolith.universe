@@ -116,6 +116,21 @@ class TerrainConfig:
     # crater pits in real metres) - one value so the two cannot drift apart.
     texture_tile_size_m: float = 20.0
 
+    # Visual terrain mesh (terrain_mesh.py): keep every Nth heightmap post as a mesh
+    # vertex. The ground is drawn as a <mesh>, not a <heightmap>, because a <heightmap>
+    # goes through Ogre-Next's Terra and gets point-sampled coarser with distance -
+    # which is what left rocks hanging in the sky at the horizon while every
+    # placement test passed. See terrain_mesh.py for the measurement.
+    #
+    # Stride 1 is the full 513 posts (0.39 m). It is not needed: the drawn surface is
+    # piecewise-planar over collision_grid_resolution cells (12 posts each here), so
+    # stride 4 still lands a vertex on every cell boundary and reproduces the surface
+    # to within a centimetre, for a 16x smaller mesh. Measured, gap opened under the
+    # 190 rocks by meshing at each stride, seeds 42/7/123: stride 4 worst +0.01 m,
+    # stride 8 worst -0.01 m (still bedded), stride 16 +0.08 m and rocks start
+    # visibly lifting. 4 keeps a 4x margin on that and costs 33k triangles.
+    terrain_mesh_stride: int = 4
+
     def __post_init__(self) -> None:
         if self.heightmap_resolution_px % 2 == 0:
             raise ValueError("heightmap_resolution_px should be odd (2^n + 1)")

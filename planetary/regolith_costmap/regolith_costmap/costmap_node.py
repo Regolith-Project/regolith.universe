@@ -8,6 +8,7 @@ onboard perception. Sensor-derived costmaps are the explicit next milestone.
 """
 
 import json
+import math
 from pathlib import Path
 
 import numpy as np
@@ -113,7 +114,20 @@ def build_costmap(
 
     # Inflate lethal cells by the rover's radius so the planner keeps the whole
     # footprint clear, not just its center point.
-    inflation_cells = max(1, int(round(rover_radius_m / actual_resolution_m)))
+    #
+    # CEIL, not round: this is a safety margin, and rounding a margin DOWN spends it.
+    # `round` under-inflates whenever the radius is not close to a whole number of
+    # cells - at a 0.25 m costmap it gives 1 cell (0.25 m) for a 0.30 m rover, which
+    # is a planner that will happily route a corner of the rover through a boulder.
+    # At the shipped 0.781 m/cell both give 1 cell, so this changes nothing about any
+    # measurement recorded so far; it is the finer resolutions that were wrong.
+    #
+    # Note what the quantisation means for the parameter: at 0.781 m/cell, every
+    # rover_radius_m from 0 to 0.78 m produces the same single cell of inflation.
+    # Tuning it inside that range does nothing at all. The rover's real circumscribed
+    # radius is 0.347 m (0.52 x 0.46 m footprint, from regolith_rover_description),
+    # so one cell already covers it with room to spare.
+    inflation_cells = max(1, math.ceil(rover_radius_m / actual_resolution_m))
     structure = ndimage.generate_binary_structure(2, 2)
     lethal_inflated = ndimage.binary_dilation(lethal, structure=structure, iterations=inflation_cells)
 

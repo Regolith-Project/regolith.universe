@@ -427,8 +427,25 @@ def _generate_and_launch(context, *args, **kwargs):
         package="regolith_bringup",
         executable="tour_mission.py",
         output="screen",
-        parameters=[{"use_sim_time": True}],
+        # The seed makes the route reproducible: the tour is drawn from the costmap, so
+        # without it the same terrain would produce a different loop on every launch.
+        parameters=[{"use_sim_time": True, "seed": seed}],
         condition=IfCondition(PythonExpression(["'", LaunchConfiguration("mission"), "' == 'tour'"])),
+    )
+
+    # Start/goal flags in Gazebo and markers in RViz. Purely a visualisation - it holds
+    # no part of the control loop, and it is deliberately left OUT of the
+    # shutdown-on-exit set below so a failed decoration cannot end a mission run.
+    mission_markers = Node(
+        package="regolith_bringup",
+        executable="mission_markers_node.py",
+        output="screen",
+        parameters=[{
+            "use_sim_time": True,
+            "world_name": WORLD_NAME,
+            "manifest_path": str(manifest_path),
+        }],
+        condition=IfCondition(LaunchConfiguration("markers")),
     )
 
     rviz_config = FindPackageShare("regolith_rover_description").find(
@@ -491,6 +508,7 @@ def _generate_and_launch(context, *args, **kwargs):
         pure_pursuit_node,
         flip_recovery_node,
         tour_mission,
+        mission_markers,
         rviz,
         *shutdown_on_unexpected_exit,
     ]
@@ -507,6 +525,12 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument(
                 "rviz", default_value="true",
                 description="Launch RViz with the rover config (needed for clicking '2D Goal Pose' goals)"
+            ),
+            DeclareLaunchArgument(
+                "markers", default_value="true",
+                description="Flag the start point and the mission goals in Gazebo and RViz "
+                            "(mission_markers_node.py). Visual only - the flags have no "
+                            "collision and nothing in the control loop reads them"
             ),
             DeclareLaunchArgument(
                 "localization_oracle", default_value="false",
