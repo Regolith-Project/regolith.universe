@@ -1,9 +1,6 @@
 # Copyright 2026 Regolith Project contributors
 # SPDX-License-Identifier: Apache-2.0
-"""Regression test for the "rover seems to be underground" bug (see PROGRESS.md):
-the rendered heightmap and the collision boxes the rover actually rests on must be
-the same surface, everywhere, for every seed - not just close enough on average.
-"""
+"""Regression test for the "rover seems to be underground" bug (see PROGRESS.md): the rendered heightmap and the collision boxes the rover actually rests on must be the same surface, everywhere, for every seed - not just close enough on average."""
 
 from PIL import Image
 import numpy as np
@@ -18,9 +15,7 @@ WHEEL_RADIUS_M = 0.09
 
 
 def _collision_top_z(grid: dict, x: float, y: float) -> float:
-    """Height of the tilted collision plane at (x, y), independent of the
-    production _synthesize_visual_heightmap code path (so this test doesn't just
-    check the synthesis function against itself)."""
+    """Height of the tilted collision plane at (x, y), independent of the production _synthesize_visual_heightmap code path (so this test doesn't just check the synthesis function against itself)."""
     col = int(
         np.clip(
             round((x + grid["half_world"]) / grid["cell_size_m"] - 0.5), 0, grid["cols_blocks"] - 1
@@ -67,9 +62,7 @@ def test_visual_heightmap_matches_collision_surface(seed):
 
 @pytest.mark.parametrize("seed", [42, 123, 7, 1, 2])
 def test_rendered_png_decodes_back_to_absolute_surface(seed, tmp_path):
-    """The saved PNG, decoded the way gz-sim actually renders it, must reproduce the
-    absolute-metre visual_heightmap - i.e. the drawn ground must land on the collision
-    surface, not a stretched copy of it.
+    """The saved PNG, decoded the way gz-sim actually renders it, must reproduce the absolute-metre visual_heightmap - i.e. the drawn ground must land on the collision surface, not a stretched copy of it.
 
     gz-sim's ogre2 heightmap min/max-normalizes the image: it stretches whatever pixel
     range the PNG contains to fill <size> z, drawing the lowest pixel at <pos> z. It does
@@ -81,7 +74,8 @@ def test_rendered_png_decodes_back_to_absolute_surface(seed, tmp_path):
     a PARTIAL pixel range and left <size> z at the fixed height_range_m, assuming a linear
     decode; gz's min/max stretch then lifted the rendered ground ~0.2-0.5 m above the
     collision boxes. That mistake reproduces here as a large gap, even though the
-    visual/collision surfaces agree in absolute metres (the test above passes)."""
+    visual/collision surfaces agree in absolute metres (the test above passes).
+    """
     cfg = TerrainConfig(seed=seed)
     rng = np.random.default_rng(cfg.seed)
     _raw, visual_heightmap, _craters, _lookup = build_heightmap(cfg, rng)
@@ -108,10 +102,7 @@ def test_rendered_png_decodes_back_to_absolute_surface(seed, tmp_path):
 
 
 def test_collision_sdf_still_generates_from_raw_heightmap():
-    """build_terrain_collision_boxes_sdf must keep taking the RAW heightmap (not
-    the synthesized visual one) - feeding it the already-smoothed surface would
-    double-smooth and silently drift collision geometry away from what
-    build_heightmap's elevation_lookup promises."""
+    """build_terrain_collision_boxes_sdf must keep taking the RAW heightmap (not the synthesized visual one) - feeding it the already-smoothed surface would double-smooth and silently drift collision geometry away from what build_heightmap's elevation_lookup promises."""
     cfg = TerrainConfig(seed=42)
     rng = np.random.default_rng(cfg.seed)
     raw_heightmap, visual_heightmap, craters, elevation_lookup = build_heightmap(cfg, rng)

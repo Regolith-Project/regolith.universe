@@ -1,8 +1,6 @@
 # Copyright 2026 Regolith Project contributors
 # SPDX-License-Identifier: Apache-2.0
-"""Generates lunar terrain, spawns the rover, and fuses wheel odometry + IMU with an
-EKF (robot_localization) for GPS-denied pose estimation. Ground-truth pose is bridged
-separately, for comparison only - it is not fed into the estimator.
+"""Generates lunar terrain, spawns the rover, and fuses wheel odometry + IMU with an EKF (robot_localization) for GPS-denied pose estimation. Ground-truth pose is bridged separately, for comparison only - it is not fed into the estimator.
 
     ros2 launch regolith_bringup localization_demo.launch.py seed:=42
 

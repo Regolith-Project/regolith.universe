@@ -265,11 +265,11 @@ def track_features(prev_gray: np.ndarray, cur_gray: np.ndarray, prev_xy: np.ndar
     if len(prev_xy) == 0:
         return np.empty((0, 2), np.float32), np.empty((0, 2), np.float32)
 
-    lk_params = dict(
-        winSize=(cfg.lk_window_px, cfg.lk_window_px),
-        maxLevel=cfg.lk_pyramid_levels,
-        criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.01),
-    )
+    lk_params = {
+        "winSize": (cfg.lk_window_px, cfg.lk_window_px),
+        "maxLevel": cfg.lk_pyramid_levels,
+        "criteria": (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.01),
+    }
     forward, status_fwd, _ = cv2.calcOpticalFlowPyrLK(
         prev_gray, cur_gray, prev_xy.reshape(-1, 1, 2), None, **lk_params
     )

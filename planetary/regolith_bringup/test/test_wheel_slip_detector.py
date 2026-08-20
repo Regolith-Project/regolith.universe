@@ -38,7 +38,7 @@ SlipDetector = wheel_slip_node.SlipDetector
 
 
 def feed(detector, duration_s, vx, wz_wheel, wz_gyro, attitude_rate=0.0, rate_hz=10.0):
-    """Feeds `duration_s` of samples; attitude_rate tilts the body over time."""
+    """Feed `duration_s` of samples; attitude_rate tilts the body over time."""
     steps = int(duration_s * rate_hz)
     start = detector._samples[-1][0] if detector._samples else 0.0
     for i in range(1, steps + 1):
@@ -85,8 +85,7 @@ def test_rotating_in_place_is_not_flagged():
 
 
 def test_wheels_claim_rotation_the_gyro_does_not_see():
-    """Wheels spinning differentially against a pinned chassis: claimed yaw
-    rate with no measured yaw rate is slip even though nothing tilts."""
+    """Wheels spinning differentially against a pinned chassis: claimed yaw rate with no measured yaw rate is slip even though nothing tilts."""
     detector = SlipDetector()
     feed(detector, 20.0, vx=0.2, wz_wheel=0.4, wz_gyro=0.0)
     assert detector.slipping()
@@ -101,8 +100,7 @@ def test_short_history_never_declares_slip():
 
 
 def test_yaw_wrap_is_not_mistaken_for_motion():
-    """Crossing +-pi must not look like a 6 rad attitude change (which would
-    suppress detection) - the detector unwraps yaw."""
+    """Crossing +-pi must not look like a 6 rad attitude change (which would suppress detection) - the detector unwraps yaw."""
     detector = SlipDetector()
     for i in range(1, 201):
         t = i / 10.0
@@ -124,10 +122,7 @@ def test_yaw_wrap_is_not_mistaken_for_motion():
     ],
 )
 def test_measured_rotation_bands(observed_fraction, expected_slip):
-    """The threshold sits in the gap between two bands measured on a real run:
-    slipping windows corroborated 8.2-12.4% of the wheels' claimed rotation,
-    honest driving 16.9-173%. Both edges are pinned here so a future tweak to
-    the threshold has to admit it is moving out of the measured gap."""
+    """The threshold sits in the gap between two bands measured on a real run: slipping windows corroborated 8.2-12.4% of the wheels' claimed rotation, honest driving 16.9-173%. Both edges are pinned here so a future tweak to the threshold has to admit it is moving out of the measured gap."""
     detector = SlipDetector()
     wheel_rate = 0.4
     for i in range(1, 201):
@@ -137,8 +132,7 @@ def test_measured_rotation_bands(observed_fraction, expected_slip):
 
 
 def test_slip_is_released_only_with_margin():
-    """Hysteresis: what declares slip (<= 0.145) must not immediately release
-    at 0.15, or the ZUPT flickers on and off around the boundary."""
+    """Hysteresis: what declares slip (<= 0.145) must not immediately release at 0.15, or the ZUPT flickers on and off around the boundary."""
     detector = SlipDetector()
     for i in range(1, 201):
         detector.add(i / 10.0, 0.2, 0.4, 0.4 * 0.10, (0.05, 0.02, 0.01 * i))
@@ -151,10 +145,7 @@ def test_slip_is_released_only_with_margin():
 
 
 def test_release_uses_recent_evidence_not_the_whole_window():
-    """Releasing on the full 15 s window would hold the zero-velocity update for
-    15 s after the rover breaks free, because the window still contains the
-    wedge - and suppressing a really-moving rover's velocity is the same
-    corruption the ZUPT exists to prevent, in the other direction."""
+    """Releasing on the full 15 s window would hold the zero-velocity update for 15 s after the rover breaks free, because the window still contains the wedge - and suppressing a really-moving rover's velocity is the same corruption the ZUPT exists to prevent, in the other direction."""
     detector = SlipDetector()
     for i in range(1, 201):  # 20 s wedged: wheels turning, gyro sees almost none
         detector.add(i / 10.0, 0.2, 0.4, 0.4 * 0.10, (0.05, 0.02, 0.004 * i))
@@ -169,8 +160,7 @@ def test_release_uses_recent_evidence_not_the_whole_window():
 
 
 def test_quiet_wheels_do_not_release_the_gate():
-    """Regression: observed live as the gate flickering at the /odom message
-    rate - 24 declare/clear pairs in two seconds.
+    """Regression: observed live as the gate flickering at the /odom message rate - 24 declare/clear pairs in two seconds.
 
     The rover was wedged (the 15 s window saw the disagreement, so slipping()
     stayed true) but had just been commanded to stop, so the most recent
@@ -191,8 +181,7 @@ def test_quiet_wheels_do_not_release_the_gate():
 
 
 def test_release_needs_positive_evidence_not_just_a_gap_in_data():
-    """Immediately after declaring slip there is no recent evidence either way;
-    the safe answer is to keep suppressing, not to release."""
+    """Immediately after declaring slip there is no recent evidence either way; the safe answer is to keep suppressing, not to release."""
     detector = SlipDetector()
     for i in range(1, 201):
         detector.add(i / 10.0, 0.2, 0.4, 0.4 * 0.10, (0.05, 0.02, 0.004 * i))

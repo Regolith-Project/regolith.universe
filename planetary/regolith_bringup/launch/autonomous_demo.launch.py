@@ -1,8 +1,6 @@
 # Copyright 2026 Regolith Project contributors
 # SPDX-License-Identifier: Apache-2.0
-"""The actual hello-world: generates terrain, spawns the rover, localizes it (EKF),
-builds a traversability costmap from the known terrain, and autonomously plans +
-drives to wherever you click "2D Goal Pose" in RViz.
+"""The actual hello-world: generates terrain, spawns the rover, localizes it (EKF), builds a traversability costmap from the known terrain, and autonomously plans + drives to wherever you click "2D Goal Pose" in RViz.
 
     ros2 launch regolith_bringup autonomous_demo.launch.py seed:=42
 

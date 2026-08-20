@@ -1,9 +1,6 @@
 # Copyright 2026 Regolith Project contributors
 # SPDX-License-Identifier: Apache-2.0
-"""Minimal pure pursuit path follower, outputting skid-steer cmd_vel directly
-(linear + angular velocity - no steering-angle conversion needed, unlike the
-Ackermann-oriented autoware_pure_pursuit; see docs/architecture.md's reuse log
-for why that package wasn't reused here).
+"""Minimal pure pursuit path follower, outputting skid-steer cmd_vel directly (linear + angular velocity - no steering-angle conversion needed, unlike the Ackermann-oriented autoware_pure_pursuit; see docs/architecture.md's reuse log for why that package wasn't reused here).
 
 Recovery is intentionally minimal per the plan ("do not build elaborate FDIR
 now"): if the rover strays far from the path or stalls, it stops and
@@ -51,8 +48,7 @@ CLOSEST_APPROACH = "closest_approach"
 
 
 class TerminalApproach:
-    """Bounds the last few metres of a goal approach, so the stop tolerance can
-    be tightened without the follower circling forever.
+    """Bounds the last few metres of a goal approach, so the stop tolerance can be tightened without the follower circling forever.
 
     Why this exists: with `goal_tolerance_m` at 1.0 m the rover stopped a metre
     short of where it believed the goal was, which ate two thirds of M4's 1.5 m
@@ -268,9 +264,7 @@ class PurePursuitNode(Node):
             self._last_progress_time = self.get_clock().now()
 
     def _check_flipped(self) -> bool:
-        """Fail loudly instead of silently cycling through stall recovery when the
-        rover is physically flipped. Returns True while the attitude is beyond the
-        limit (caller must stop and skip the control step)."""
+        """Fail loudly instead of silently cycling through stall recovery when the rover is physically flipped. Returns True while the attitude is beyond the limit (caller must stop and skip the control step)."""
         if self._imu_orientation is None:
             return False
         roll, pitch = _roll_pitch_from_quaternion(self._imu_orientation)
@@ -429,9 +423,7 @@ class PurePursuitNode(Node):
         self._cmd_pub.publish(cmd)
 
     def _check_stalled_or_deviated(self, position: np.ndarray, deviation: float) -> bool:
-        """Minimal recovery: if far off the path or not making progress, stop and
-        re-trigger planning from the current position. Returns True if recovery
-        action was taken (caller should skip the normal control step this cycle)."""
+        """Minimal recovery: if far off the path or not making progress, stop and re-trigger planning from the current position. Returns True if recovery action was taken (caller should skip the normal control step this cycle)."""
         now = self.get_clock().now()
         deviation_limit = self.get_parameter("path_deviation_limit_m").value
         if deviation > deviation_limit:

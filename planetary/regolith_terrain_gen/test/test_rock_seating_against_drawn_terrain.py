@@ -49,7 +49,7 @@ MAX_FLOAT_M = 0.002
 
 
 def _drawn_surface(world_dir: Path):
-    """The ground gz actually draws, rebuilt from the terrain mesh on disk.
+    """Rebuild the ground gz actually draws, from the terrain mesh on disk.
 
     Parses ``terrain.obj`` without assuming how it was written: vertices are read as
     world coordinates and the grid is recovered from them, so a wrong axis, a wrong
@@ -93,7 +93,7 @@ def _drawn_surface(world_dir: Path):
 
 
 def _obj_vertices(path: Path) -> np.ndarray:
-    """The mesh gz renders, parsed straight out of the exported OBJ."""
+    """Parse the mesh gz renders straight out of the exported OBJ."""
     verts = [
         [float(v) for v in line.split()[1:4]]
         for line in path.read_text().splitlines()

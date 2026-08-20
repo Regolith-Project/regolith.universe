@@ -33,8 +33,7 @@ SHIPPED_RESOLUTION_M = 200.0 / 256  # what costmap_node logs at the shipped sett
 
 
 def _inflation_cells(radius_m, resolution_m):
-    """The expression under test, kept in one place so the tests state the contract
-    rather than restating the implementation."""
+    """Compute the inflation-cell count under test, kept in one place so the tests state the contract rather than restating the implementation."""
     return max(1, math.ceil(radius_m / resolution_m))
 
 
@@ -50,8 +49,7 @@ def test_inflation_is_never_smaller_than_the_radius_it_stands_for(radius_m, reso
 
 
 def test_rounding_was_the_defect_and_ceiling_is_the_fix():
-    """Guards the guard: names a case where the old expression was short, so this file
-    cannot quietly stop testing anything."""
+    """Guards the guard: names a case where the old expression was short, so this file cannot quietly stop testing anything."""
     radius_m, resolution_m = 0.30, 0.25
     old = max(1, int(round(radius_m / resolution_m)))
     assert old * resolution_m < radius_m, "the old rounding no longer under-inflates"
@@ -59,23 +57,20 @@ def test_rounding_was_the_defect_and_ceiling_is_the_fix():
 
 
 def test_the_shipped_configuration_is_unchanged_by_the_fix():
-    """Every number recorded in PROGRESS.md was measured with the old expression. If
-    this stops holding, those numbers need re-measuring rather than trusting."""
+    """Every number recorded in PROGRESS.md was measured with the old expression. If this stops holding, those numbers need re-measuring rather than trusting."""
     for radius_m in (0.3, ROVER_CIRCUMSCRIBED_M):
         old = max(1, int(round(radius_m / SHIPPED_RESOLUTION_M)))
         assert _inflation_cells(radius_m, SHIPPED_RESOLUTION_M) == old == 1
 
 
 def test_one_shipped_cell_already_covers_the_real_rover():
-    """The investigation's actual question: is the shipped map under-inflated? No - one
-    cell is 0.78 m against a 0.347 m rover, more than twice what is needed."""
+    """The investigation's actual question: is the shipped map under-inflated? No - one cell is 0.78 m against a 0.347 m rover, more than twice what is needed."""
     covered = _inflation_cells(0.3, SHIPPED_RESOLUTION_M) * SHIPPED_RESOLUTION_M
     assert covered > 2 * ROVER_CIRCUMSCRIBED_M
 
 
 def test_the_parameter_is_inert_across_its_plausible_range_at_shipped_resolution():
-    """Not a preference - a fact worth failing on if the resolution ever changes, so
-    that 'tune rover_radius_m' stops being suggested when it would do nothing."""
+    """Not a preference - a fact worth failing on if the resolution ever changes, so that 'tune rover_radius_m' stops being suggested when it would do nothing."""
     cells = {
         _inflation_cells(r, SHIPPED_RESOLUTION_M)
         for r in (0.0, 0.1, 0.3, ROVER_CIRCUMSCRIBED_M, 0.5, 0.78)
@@ -103,8 +98,7 @@ def _flat_manifest(tmp_path, rocks):
 
 
 def test_a_boulder_blocks_more_than_its_own_footprint(tmp_path):
-    """End to end through build_costmap: the lethal region around a rock has to be
-    wider than the rock, or the inflation is not reaching the grid at all."""
+    """End to end through build_costmap: the lethal region around a rock has to be wider than the rock, or the inflation is not reaching the grid at all."""
     from regolith_costmap.costmap_node import load_heightmap
 
     rock = {"x_m": 0.0, "y_m": 0.0, "scale_m": 0.5, "collision_radii_m": [0.5, 0.5, 0.5]}

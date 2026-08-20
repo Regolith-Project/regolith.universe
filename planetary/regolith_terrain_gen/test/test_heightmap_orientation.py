@@ -44,9 +44,7 @@ def test_png_is_the_transpose_of_the_array(tmp_path):
 
 
 def test_a_spike_lands_at_the_right_world_position(tmp_path):
-    """The bug in the terms it was actually found in: a spike at (+60, 0) must not
-    render at (0, +60). Positions are computed in gz's convention - image axis 0 is
-    world X, axis 1 is world Y."""
+    """The bug in the terms it was actually found in: a spike at (+60, 0) must not render at (0, +60). Positions are computed in gz's convention - image axis 0 is world X, axis 1 is world Y."""
     cfg = TerrainConfig(seed=42)
     n = cfg.heightmap_resolution_px
     world = cfg.world_size_m
@@ -71,8 +69,7 @@ def test_a_spike_lands_at_the_right_world_position(tmp_path):
 
 
 def test_decoded_png_matches_the_visual_surface(tmp_path):
-    """Decoding the PNG the way a consumer does must give back the surface that was
-    encoded, at the right world (x, y).
+    """Decoding the PNG the way a consumer does must give back the surface that was encoded, at the right world (x, y).
 
     This used to compare against ``elevation_lookup``, back when the PNG was also the
     drawn ground. It no longer is: the ground is a mesh, and elevation_lookup evaluates
@@ -90,8 +87,6 @@ def test_decoded_png_matches_the_visual_surface(tmp_path):
     decoded = _decode(png, z_min, z_span)
 
     n = cfg.heightmap_resolution_px
-    ppm = (n - 1) / cfg.world_size_m
-    half = cfg.world_size_m / 2.0
 
     # Sample at exact heightmap POSTS, so no interpolation enters and any difference
     # left is the encoding - which is the thing under test.

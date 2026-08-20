@@ -28,8 +28,7 @@ SEEDS = [42, 123, 7]
 
 
 def test_rock_collision_is_not_a_mesh(tmp_path):
-    """<mesh> collision does nothing in this gz-physics install, so a rock whose
-    collision geometry is a mesh is an obstacle the rover drives straight through."""
+    """<mesh> collision does nothing in this gz-physics install, so a rock whose collision geometry is a mesh is an obstacle the rover drives straight through."""
     import json
 
     world_sdf = generate_world(TerrainConfig(seed=42), tmp_path / "world", start_paused=True)
@@ -58,8 +57,7 @@ def test_rock_collision_is_not_a_mesh(tmp_path):
 
 @pytest.mark.parametrize("seed", SEEDS)
 def test_collision_ellipsoid_stays_inside_the_visible_rock(tmp_path, seed):
-    """The collision proxy must not poke out past the mesh the user sees, or the rover
-    would stop against thin air."""
+    """The collision proxy must not poke out past the mesh the user sees, or the rover would stop against thin air."""
     cfg = TerrainConfig(seed=seed)
     rng = np.random.default_rng(cfg.seed)
     variants = generate_rock_variants(

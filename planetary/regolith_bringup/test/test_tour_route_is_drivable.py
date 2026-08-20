@@ -115,8 +115,7 @@ def test_the_route_is_a_loop_of_short_legs(costmaps, seed):
 
 @pytest.mark.parametrize("seed", SEEDS)
 def test_the_rover_has_to_avoid_something_on_most_legs(costmaps, seed):
-    """A tour of open regolith would drive perfectly and demonstrate nothing. The old
-    hand-picked route managed 2 of 5 on two of these seeds."""
+    """A tour of open regolith would drive perfectly and demonstrate nothing. The old hand-picked route managed 2 of 5 on two of these seeds."""
     from regolith_planner.tour import _straight_line_blocked
 
     grid, resolution, origin_x, origin_y = costmaps[seed]
@@ -137,8 +136,7 @@ def test_the_rover_has_to_avoid_something_on_most_legs(costmaps, seed):
 
 
 def test_the_old_hardcoded_route_would_still_fail(costmaps):
-    """Guards the guard. If these assertions cannot fail, they prove nothing - and the
-    route they replaced is the one case known to be bad."""
+    """Guards the guard. If these assertions cannot fail, they prove nothing - and the route they replaced is the one case known to be bad."""
     old_route = [(12.0, 8.0), (18.0, -4.0), (4.0, -14.0), (-10.0, -6.0), (0.0, 0.0)]
     offenders = 0
     for seed in SEEDS:

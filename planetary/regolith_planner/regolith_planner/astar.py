@@ -27,14 +27,12 @@ LETHAL_COST = 100
 
 
 def _cost_multiplier(cell_cost: int) -> float:
-    """Higher-cost cells are more expensive to cross, biasing the search toward
-    low-risk routing without forbidding moderate-cost cells outright."""
+    """Higher-cost cells are more expensive to cross, biasing the search toward low-risk routing without forbidding moderate-cost cells outright."""
     return 1.0 + (cell_cost / 20.0)
 
 
 def plan_path(cost_grid: np.ndarray, start_rc: tuple, goal_rc: tuple) -> list:
-    """Returns a list of (row, col) grid cells from start to goal, or an empty
-    list if no path exists."""
+    """Return a list of (row, col) grid cells from start to goal, or an empty list if no path exists."""
     rows, cols = cost_grid.shape
     for rc in (start_rc, goal_rc):
         # Explicit bounds check: negative indices would silently wrap around in numpy.
@@ -87,8 +85,7 @@ def plan_path(cost_grid: np.ndarray, start_rc: tuple, goal_rc: tuple) -> list:
 
 
 def smooth_path(path_xy: list, iterations: int = 3, weight: float = 0.4) -> list:
-    """Light moving-average smoothing to soften the grid search's jagged
-    diagonal/axis-aligned steps, keeping the endpoints fixed."""
+    """Light moving-average smoothing to soften the grid search's jagged diagonal/axis-aligned steps, keeping the endpoints fixed."""
     if len(path_xy) < 3:
         return path_xy
     points = [np.array(p, dtype=np.float64) for p in path_xy]

@@ -25,7 +25,7 @@ ORIGIN_M = -100.0
 
 
 def snap_to_cell_centre(x: float, y: float) -> tuple:
-    """What the planner's grid round-trip does to a goal - see planner_node."""
+    """Reproduce what the planner's grid round-trip does to a goal - see planner_node."""
     col = int((x - ORIGIN_M) / CELL_M)
     row = int((y - ORIGIN_M) / CELL_M)
     return ORIGIN_M + (col + 0.5) * CELL_M, ORIGIN_M + (row + 0.5) * CELL_M
@@ -38,8 +38,7 @@ def test_snapping_moves_the_goal_by_a_real_distance():
 
 
 def test_stopping_at_the_snapped_point_can_miss_the_bar():
-    """A rover 1.49 m from path[-1] - which reports success - can be beyond the
-    1.5 m bar from the goal it was actually given."""
+    """A rover 1.49 m from path[-1] - which reports success - can be beyond the 1.5 m bar from the goal it was actually given."""
     goal = (52.33, -66.98)
     snapped = snap_to_cell_centre(*goal)
     offset = math.dist(goal, snapped)
@@ -52,8 +51,7 @@ def test_stopping_at_the_snapped_point_can_miss_the_bar():
 
 
 def test_measuring_against_the_commanded_goal_satisfies_the_bar():
-    """With the fix, "arrived" means within tolerance of the commanded goal, so
-    the true error can never exceed the bar however the path was snapped."""
+    """With the fix, "arrived" means within tolerance of the commanded goal, so the true error can never exceed the bar however the path was snapped."""
     goal = (52.33, -66.98)
     for bearing_deg in range(0, 360, 15):
         bearing = math.radians(bearing_deg)

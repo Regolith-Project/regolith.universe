@@ -1,7 +1,6 @@
 # Copyright 2026 Regolith Project contributors
 # SPDX-License-Identifier: Apache-2.0
-"""Procedural regolith surface textures: grey albedo, high-frequency normal map,
-high (and slightly varying) roughness."""
+"""Procedural regolith surface textures: grey albedo, high-frequency normal map, high (and slightly varying) roughness."""
 
 from pathlib import Path
 
@@ -28,7 +27,7 @@ def generate_albedo(resolution: int, rng: np.random.Generator) -> np.ndarray:
 def _small_crater_pits(
     resolution: int, rng: np.random.Generator, tile_size_m: float, count: int
 ) -> np.ndarray:
-    """A height field of small bowl-and-rim pits, for craters too small to be geometry.
+    """Build a height field of small bowl-and-rim pits, for craters too small to be geometry.
 
     The rendered/collided surface is the coarse collision grid, so craters below roughly
     2x the collision cell size (~8 m) simply do not survive into it - see config's
@@ -66,8 +65,7 @@ def generate_normal_map(
     tile_size_m: float = 20.0,
     pit_count: int = 26,
 ) -> np.ndarray:
-    """High-frequency micro-detail (small rocks/regolith grain) plus sub-resolution
-    crater pitting, encoded as a tangent-space normal map."""
+    """High-frequency micro-detail (small rocks/regolith grain) plus sub-resolution crater pitting, encoded as a tangent-space normal map."""
     detail = value_noise_2d((resolution, resolution), 18.0, rng) + 0.5 * value_noise_2d(
         (resolution, resolution), 9.0, rng
     )

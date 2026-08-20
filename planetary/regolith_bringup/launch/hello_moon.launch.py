@@ -1,8 +1,6 @@
 # Copyright 2026 Regolith Project contributors
 # SPDX-License-Identifier: Apache-2.0
-"""The full Regolith hello-world demo: procedural lunar terrain, a localized
-skid-steer rover, a traversability costmap, and autonomous navigation - either
-click-a-goal-yourself (the default) or a scripted multi-waypoint tour.
+"""The full Regolith hello-world demo: procedural lunar terrain, a localized skid-steer rover, a traversability costmap, and autonomous navigation - either click-a-goal-yourself (the default) or a scripted multi-waypoint tour.
 
     ros2 launch regolith_bringup hello_moon.launch.py seed:=42
     ros2 launch regolith_bringup hello_moon.launch.py seed:=42 mission:=tour
@@ -54,7 +52,7 @@ _DOMAIN_ID_MAX = 101
 
 
 def _pid_alive(pid: int) -> bool:
-    """True if a process with this PID currently exists (signal 0 probes it)."""
+    """Return True if a process with this PID currently exists (signal 0 probes it)."""
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -81,10 +79,7 @@ def _release_domain_claim(lock_path: Path) -> None:
 
 
 def _allocate_domain_id() -> int:
-    """Claim a ROS_DOMAIN_ID no concurrently-live regolith launch is using and
-    export it into os.environ, so every process this launch subsequently spawns
-    (gz sim, the ros_gz bridge, EKF, planner, rviz, ...) shares one DDS domain
-    that is isolated from any other launch's domain.
+    """Claim a ROS_DOMAIN_ID no concurrently-live regolith launch is using and export it into os.environ, so every process this launch subsequently spawns (gz sim, the ros_gz bridge, EKF, planner, rviz, ...) shares one DDS domain that is isolated from any other launch's domain.
 
     This is the structural fix for the overnight-freeze root cause (two launches
     sharing one ROS graph over identical topic names - see PROGRESS.md). A
@@ -154,9 +149,7 @@ def _allocate_domain_id() -> int:
 
 
 def _bake_rover_model_sdf(rover_urdf_path: Path, spawn_z: float) -> str:
-    """Convert the rover URDF into an SDF <model> block, renamed to ROVER_NAME and
-    posed at its spawn point, ready to splice directly into the generated world.sdf
-    (the same file rocks/terrain are already baked into - see worldgen.py).
+    """Convert the rover URDF into an SDF <model> block, renamed to ROVER_NAME and posed at its spawn point, ready to splice directly into the generated world.sdf (the same file rocks/terrain are already baked into - see worldgen.py).
 
     This makes the rover part of the world from the moment gz-sim loads it, instead
     of being added ~3s later via a separate `ros2 run ros_gz_sim create` service

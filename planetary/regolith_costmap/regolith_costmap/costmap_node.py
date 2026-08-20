@@ -23,8 +23,7 @@ from scipy import ndimage
 
 
 def load_heightmap(manifest: dict) -> np.ndarray:
-    """Decodes the terrain heightmap PNG into this module's [row = y, col = x] array,
-    in absolute metres.
+    """Decode the terrain heightmap PNG into this module's [row = y, col = x] array, in absolute metres.
 
     The vertical decode uses the manifest's `heightmap_z_min_m` / `heightmap_z_span_m`,
     which is what the PNG was actually encoded against (save_heightmap_png writes the
@@ -75,7 +74,7 @@ def build_costmap(
     rover_radius_m: float,
     slope_lethal_deg: float,
 ) -> tuple:
-    """Returns (cost_grid uint8 [0-100], resolution_m, origin_x_m, origin_y_m)."""
+    """Return (cost_grid uint8 [0-100], resolution_m, origin_x_m, origin_y_m)."""
     world_size_m = manifest["world_size_m"]
     grid_size = int(round(world_size_m / resolution_m))
 
@@ -145,7 +144,7 @@ def build_costmap(
 
 
 def stamp_hazard(cost_grid: np.ndarray, row: int, col: int, radius_cells: int) -> int:
-    """Marks a lethal disc of `radius_cells` around (row, col). Returns cells marked.
+    """Mark a lethal disc of `radius_cells` around (row, col). Returns cells marked.
 
     Mutates the grid in place - hazards accumulate over a run, and a later one
     must not undo an earlier one.

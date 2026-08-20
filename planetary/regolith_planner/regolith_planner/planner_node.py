@@ -1,7 +1,6 @@
 # Copyright 2026 Regolith Project contributors
 # SPDX-License-Identifier: Apache-2.0
-"""Plans a cost-aware path from the current (EKF-estimated) pose to an RViz
-"2D Goal Pose" click, over the /costmap published by regolith_costmap."""
+"""Plans a cost-aware path from the current (EKF-estimated) pose to an RViz "2D Goal Pose" click, over the /costmap published by regolith_costmap."""
 
 from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import OccupancyGrid

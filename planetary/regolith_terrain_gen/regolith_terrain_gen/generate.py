@@ -18,7 +18,7 @@ from regolith_terrain_gen.worldgen import write_manifest
 
 
 def generate_world(cfg: TerrainConfig, output_dir: Path, start_paused: bool = True) -> Path:
-    """Generates all world assets under output_dir and returns the path to world.sdf."""
+    """Generate all world assets under output_dir and return the path to world.sdf."""
     output_dir.mkdir(parents=True, exist_ok=True)
     rng = np.random.default_rng(cfg.seed)
 

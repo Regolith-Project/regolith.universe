@@ -49,8 +49,7 @@ def test_gives_up_rather_than_searching_forever():
 
 
 def test_free_cell_beyond_the_search_radius_is_not_used():
-    """A cell 6 rings away is too far to be a sensible plan start - saying so is
-    better than starting a path the rover cannot reach."""
+    """A cell 6 rings away is too far to be a sensible plan start - saying so is better than starting a path the rover cannot reach."""
     grid = np.full((20, 20), LETHAL_COST, dtype=np.int16)
     grid[16, 10] = 0
     assert nearest_free_cell(grid, (10, 10), 5) is None

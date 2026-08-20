@@ -330,7 +330,7 @@ class FlipRecoveryNode(Node):
         self._rtf = 0.9 * self._rtf + 0.1 * ratio
 
     def _hold(self, linear_x: float, angular_z: float, duration_s: float, rate_hz: float) -> None:
-        """Publishes one command for duration_s of SIMULATED time, blocking.
+        """Publish one command for duration_s of SIMULATED time, blocking.
 
         Blocking, not a timer callback: the override has to publish faster than
         pure_pursuit_node's 10 Hz control loop for the whole window, or gz-sim
@@ -441,7 +441,7 @@ class FlipRecoveryNode(Node):
             self._pending_escape_check = (start_xy[0], start_xy[1], level, None)
 
     def _mark_hazard(self) -> None:
-        """Publishes the wedge point so the costmap can make it a keep-out zone.
+        """Publish the wedge point so the costmap can make it a keep-out zone.
 
         Marked in the ESTIMATOR's frame (/odometry/filtered), not ground truth:
         the planner routes in that frame, so a hazard marked there stays put
@@ -461,9 +461,7 @@ class FlipRecoveryNode(Node):
         self._hazard_pub.publish(point)
 
     def _replan_after_escape(self) -> None:
-        """Re-sends the active goal so the planner re-plans against the costmap
-        that now contains the keep-out zone. Without this the rover keeps
-        following the old path - which still runs through the obstacle."""
+        """Re-sends the active goal so the planner re-plans against the costmap that now contains the keep-out zone. Without this the rover keeps following the old path - which still runs through the obstacle."""
         if self._last_goal is None:
             return
         goal = PoseStamped()
@@ -473,7 +471,7 @@ class FlipRecoveryNode(Node):
         self._goal_pub.publish(goal)
 
     def _check_escape_result(self, p, t: float) -> None:
-        """Reports whether the escape maneuver actually moved the rover.
+        """Report whether the escape maneuver actually moved the rover.
 
         Only once enough sim time has passed for post-maneuver poses to have
         been received - see the note where _pending_escape_check is set.

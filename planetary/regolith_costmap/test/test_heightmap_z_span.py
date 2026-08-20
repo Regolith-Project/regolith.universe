@@ -29,7 +29,7 @@ RES_PX = 129
 
 
 def _write_manifest(tmp_path, surface_yx, **overrides):
-    """Encodes surface_yx exactly as save_heightmap_png does, manifest fields included."""
+    """Encode surface_yx exactly as save_heightmap_png does, manifest fields included."""
     png_path = tmp_path / "heightmap.png"
     z_min = float(surface_yx.min())
     z_span = max(float(surface_yx.ptp()), 1e-9)
@@ -49,7 +49,7 @@ def _write_manifest(tmp_path, surface_yx, **overrides):
 
 
 def _ramp(rise_m, z_min_m=0.0):
-    """A plane rising `rise_m` across the world in +x, so its slope is analytic."""
+    """Build a plane rising `rise_m` across the world in +x, so its slope is analytic."""
     _, xs = np.mgrid[0:RES_PX, 0:RES_PX]
     return z_min_m + xs / (RES_PX - 1) * rise_m
 

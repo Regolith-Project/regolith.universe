@@ -54,7 +54,7 @@ def _rot_z(angle):
 
 
 def _random_field(seed, cells=400, extent_m=60.0):
-    """A fixed, bilinearly-sampled random field over world (x, y) in metres.
+    """Build a fixed, bilinearly-sampled random field over world (x, y) in metres.
 
     Blobby rather than white noise, because Lucas-Kanade needs structure with a
     scale to it - and so does real regolith under a low sun.
@@ -130,7 +130,7 @@ def _render(base_position_m, base_yaw_rad, k_matrix, texture, relief):
 
 
 def _estimate(velocity_mps, yaw_rate_rps=0.0, seed=0, cfg=None):
-    """Renders a keyframe/current pair for a known base_link motion and estimates it.
+    """Render a keyframe/current pair for a known base_link motion and estimate it.
 
     Takes VELOCITY, and moves the rover by velocity * DT_S, so the assertions read
     in the units the estimator reports and stay correct if the baseline changes.
@@ -343,7 +343,7 @@ def test_reported_sigma_is_finite_and_sane_on_a_good_estimate():
 
 
 def test_a_zero_interval_is_not_a_measurement():
-    """dt = 0 would divide displacement by nothing; refuse rather than emit inf."""
+    """Refuse rather than emit inf when dt = 0 would divide displacement by nothing."""
     k_matrix = _intrinsics()
     texture, relief = _random_field(0), _random_field(100, cells=120)
     gray, depth = _render(np.zeros(3), 0.0, k_matrix, texture, relief)
@@ -363,7 +363,7 @@ def test_a_zero_interval_is_not_a_measurement():
 
 
 def test_a_frame_with_no_range_anywhere_says_so_specifically():
-    """ "No depth here" and "no texture here" are different problems.
+    """Treat 'no depth here' and 'no texture here' as different problems.
 
     They used to produce the same message, and that cost real time: an M4
     acceptance seed refused 2759 consecutive frame pairs for "too few tracked
@@ -394,8 +394,7 @@ def test_a_frame_with_no_range_anywhere_says_so_specifically():
 
 
 def test_a_physically_impossible_speed_is_refused():
-    """The rover cruises at 0.2 m/s; a solver artifact reporting metres per second
-    is not a measurement of it.
+    """The rover cruises at 0.2 m/s; a solver artifact reporting metres per second is not a measurement of it.
 
     The reprojection gate catches most bad solves but not all - the catastrophic
     cases measured on real frames ran to 46 m/s. A sensor that knows what vehicle

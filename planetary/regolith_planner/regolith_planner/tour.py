@@ -77,8 +77,7 @@ def _neighbourhood_clear(cost_grid: np.ndarray, rc: tuple) -> bool:
 
 
 def path_clearance_cells(cost_grid: np.ndarray, path: list) -> float:
-    """Width of the tightest pinch on a path, in cells: the smallest distance from any
-    cell of it to the nearest lethal cell, capped at CLEARANCE_SEARCH_CELLS.
+    """Width of the tightest pinch on a path, in cells: the smallest distance from any cell of it to the nearest lethal cell, capped at CLEARANCE_SEARCH_CELLS.
 
     Local window search rather than a distance transform, to keep this module's
     dependencies to numpy - the paths are short and the window is small.
@@ -106,7 +105,7 @@ def path_clearance_cells(cost_grid: np.ndarray, path: list) -> float:
 
 
 def _straight_line_blocked(cost_grid: np.ndarray, a_rc: tuple, b_rc: tuple) -> bool:
-    """Does the straight line between two cells cross anything lethal?
+    """Check whether the straight line between two cells crosses anything lethal.
 
     Sampled at half-cell steps - a leg whose direct line is clear is one the planner
     would fly straight down, which tests nothing.
@@ -133,7 +132,7 @@ def plan_tour(
     leg_min_m: float = LEG_MIN_M,
     leg_max_m: float = LEG_MAX_M,
 ) -> dict:
-    """Returns {"waypoints": [(x, y), ...], "notes": [str, ...]}.
+    """Return {"waypoints": [(x, y), ...], "notes": [str, ...]}.
 
     `waypoints` has `leg_count` entries and ends at `spawn_xy`. `notes` records every
     place a requirement had to be relaxed to fill the route, so a weaker tour reports
@@ -233,8 +232,7 @@ def _draw_waypoint(
     require_blocked,
     homeward,
 ):
-    """One waypoint, by rejection sampling. Cheap tests first, A* only on survivors -
-    A* over the whole grid is far too expensive to run on every draw.
+    """One waypoint, by rejection sampling. Cheap tests first, A* only on survivors - A* over the whole grid is far too expensive to run on every draw.
 
     Survivors are pooled rather than taken first come, and the winner is the one whose
     path has the widest pinch point: every candidate here is already plannable, so the

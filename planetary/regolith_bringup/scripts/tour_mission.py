@@ -84,7 +84,7 @@ class TourMissionNode(Node):
             )
 
     def _on_costmap(self, msg: OccupancyGrid) -> None:
-        """The costmap is republished at 1 Hz; the route is chosen once, off the first."""
+        """Ignore all but the first costmap: republished at 1 Hz, but the route is chosen once."""
         if self._waypoints:
             return
         self._seen_costmap = True

@@ -208,7 +208,7 @@ class SlipDetector:
         }
 
     def _rotation_disagrees(self, f: dict) -> bool:
-        """The wheels claim a lot of turning; the gyro barely sees any of it."""
+        """Check whether the wheels claim a lot of turning while the gyro barely sees any of it."""
         if f["claimed_rotation_rad"] < self.min_claimed_rotation_rad:
             return False
         return f["observed_rotation_rad"] <= self.rotation_ratio * f["claimed_rotation_rad"]
@@ -229,7 +229,7 @@ class SlipDetector:
         return self._rotation_disagrees(f) or self._body_is_rigid(f)
 
     def clearing(self) -> bool:
-        """True when it is safe to say the slip episode has ended.
+        """Return True when it is safe to say the slip episode has ended.
 
         Judged on the RECENT slice (release_window_s), not the full declaration
         window, which still contains the wedge for 15 s after the rover breaks

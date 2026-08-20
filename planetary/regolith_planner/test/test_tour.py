@@ -48,8 +48,7 @@ def _cells(waypoints):
 
 
 def test_every_waypoint_is_somewhere_the_planner_will_accept():
-    """The regression this module exists for: waypoints on lethal cells, which the
-    planner refuses outright ("Goal cell is lethal - pick another goal")."""
+    """The regression this module exists for: waypoints on lethal cells, which the planner refuses outright ("Goal cell is lethal - pick another goal")."""
     grid = _scatter_obstacles(_grid())
     result = plan_tour(grid, RES, ORIGIN, ORIGIN, seed=42)
 
@@ -111,17 +110,14 @@ def test_different_seeds_give_different_routes():
 
 
 def test_open_ground_is_reported_rather_than_passed_off_as_a_real_leg():
-    """On an empty grid no leg can cross an obstacle, because there are none. The route
-    is still driveable, and the notes have to say what it is missing - a tour that
-    exercises no avoidance must not look like one that does."""
+    """On an empty grid no leg can cross an obstacle, because there are none. The route is still driveable, and the notes have to say what it is missing - a tour that exercises no avoidance must not look like one that does."""
     result = plan_tour(_grid(), RES, ORIGIN, ORIGIN, seed=42)
     assert len(result["waypoints"]) == 5
     assert sum("open ground" in n for n in result["notes"]) == 4
 
 
 def test_a_boxed_in_spawn_is_refused_rather_than_worked_around():
-    """Nothing can be built from it, and pretending otherwise would hand the mission a
-    route it cannot drive."""
+    """Nothing can be built from it, and pretending otherwise would hand the mission a route it cannot drive."""
     grid = _grid(fill=LETHAL_COST)
     grid[55:65, 55:65] = 0  # a small clear pocket containing spawn, nothing beyond
     result = plan_tour(grid, RES, ORIGIN, ORIGIN, seed=42)
@@ -130,8 +126,7 @@ def test_a_boxed_in_spawn_is_refused_rather_than_worked_around():
 
 
 def test_clearance_measures_the_tightest_pinch_not_the_average():
-    """What wedges the rover is the narrowest point of a corridor, not its typical
-    width - so the score has to be a minimum over the path."""
+    """What wedges the rover is the narrowest point of a corridor, not its typical width - so the score has to be a minimum over the path."""
     from regolith_planner.tour import CLEARANCE_SEARCH_CELLS
     from regolith_planner.tour import path_clearance_cells
 
@@ -160,9 +155,7 @@ def test_open_ground_scores_the_full_search_radius():
 
 
 def test_the_wider_corridor_wins_when_both_are_plannable():
-    """Two ways round one obstacle - a one-cell slot and an open detour. Every candidate
-    reaching the pool is already plannable, so the pool exists precisely to break this
-    tie in favour of the route the rover can physically get through."""
+    """Two ways round one obstacle - a one-cell slot and an open detour. Every candidate reaching the pool is already plannable, so the pool exists precisely to break this tie in favour of the route the rover can physically get through."""
     from regolith_planner.tour import path_clearance_cells
 
     grid = _grid()

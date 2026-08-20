@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 # Copyright 2026 Regolith Project contributors
 # SPDX-License-Identifier: Apache-2.0
-"""Marks the start and the mission goals in both windows: flags in Gazebo, markers in
-RViz.
+"""Marks the start and the mission goals in both windows: flags in Gazebo, markers in RViz.
 
 Watching this demo, there was no way to tell where the rover set off from or where it
 is trying to get to - the Gazebo view is 200 m of grey regolith, and RViz showed a
@@ -81,8 +80,7 @@ def waypoint_near(waypoints, x: float, y: float):
 
 
 def _flag_sdf(name, x, y, z, rgb, height=POLE_M) -> str:
-    """One flag, as a single line of SDF - newlines cannot be embedded in the protobuf
-    text-format string field the create service takes."""
+    """One flag, as a single line of SDF - newlines cannot be embedded in the protobuf text-format string field the create service takes."""
     r, g, b = rgb
     return (
         f'<sdf version="1.10"><model name="{name}"><static>true</static>'
@@ -148,7 +146,7 @@ class MissionMarkersNode(Node):
     # ---- terrain ---------------------------------------------------------------
 
     def _load_terrain(self) -> None:
-        """Flags stand on the ground gz DRAWS, read back from the shipped terrain mesh.
+        """Load the terrain height flags stand on from the shipped terrain mesh, the same ground gz DRAWS.
 
         Falls back to the spawn elevation for the whole world if the mesh is missing,
         which puts flags at a plausible height instead of burying them at z = 0.
@@ -260,7 +258,7 @@ class MissionMarkersNode(Node):
                 del self._pending[name]
 
     def _is_the_start(self, x: float, y: float) -> bool:
-        """The tour's last waypoint is the way home, so it lands on the start.
+        """Treat (x, y) as the start: the tour's last waypoint is the way home, so it lands there.
 
         Two flags at one position z-fight, and which banner wins is arbitrary - the
         green START flag came out amber in Gazebo because the waypoint flag was drawn
@@ -275,9 +273,7 @@ class MissionMarkersNode(Node):
             self._request_flag(f"mission_flag_wp_{i + 1}", x, y, PENDING_RGB)
 
     def _move_active_flag(self) -> None:
-        """One flag, moved. Recolouring an existing Gazebo visual has no service in this
-        install, so 'which goal is live' is carried by a separate taller flag that
-        follows the active goal rather than by restyling the waypoint flags."""
+        """One flag, moved. Recolouring an existing Gazebo visual has no service in this install, so 'which goal is live' is carried by a separate taller flag that follows the active goal rather than by restyling the waypoint flags."""
         if not self._use_gazebo or self._active is None:
             return
         x, y = self._active
@@ -331,7 +327,7 @@ class MissionMarkersNode(Node):
         return marker
 
     def _flag_markers(self, namespace, index, x, y, rgb, label, height) -> list:
-        """A flag in RViz is three markers: pole, banner, floating label.
+        """Build the three markers - pole, banner, floating label - that make up one flag in RViz.
 
         RViz's fixed frame is odom and goals arrive in odom, so these are published in
         odom unchanged - no elevation lookup, because RViz has no terrain to stand on

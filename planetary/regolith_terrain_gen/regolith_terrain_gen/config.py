@@ -3,7 +3,6 @@
 """Tunable parameters for procedural lunar terrain generation."""
 
 from dataclasses import dataclass
-from dataclasses import field
 
 
 @dataclass

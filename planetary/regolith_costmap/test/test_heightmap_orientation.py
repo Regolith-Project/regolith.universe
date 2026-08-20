@@ -27,8 +27,7 @@ RES_PX = 129
 
 
 def _write_manifest(tmp_path, surface_yx):
-    """Writes surface_yx (indexed [y, x]) out the way the generator does: transposed,
-    full-range, with the real (z_min, span) that range decodes to recorded beside it."""
+    """Write surface_yx (indexed [y, x]) out the way the generator does: transposed, full-range, with the real (z_min, span) that range decodes to recorded beside it."""
     png_path = tmp_path / "heightmap.png"
     z_min = float(surface_yx.min())
     z_span = max(float(surface_yx.ptp()), 1e-9)
@@ -49,7 +48,7 @@ def _write_manifest(tmp_path, surface_yx):
 
 
 def _spike_surface(x_m, y_m):
-    """A single tall spike at world (x_m, y_m), on otherwise flat ground."""
+    """Build a single tall spike at world (x_m, y_m), on otherwise flat ground."""
     surface = np.zeros((RES_PX, RES_PX))
     half = WORLD_SIZE_M / 2.0
     col = int(round((x_m + half) / WORLD_SIZE_M * (RES_PX - 1)))

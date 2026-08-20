@@ -1,7 +1,6 @@
 # Copyright 2026 Regolith Project contributors
 # SPDX-License-Identifier: Apache-2.0
-"""Low-poly procedural rock meshes: an icosphere, subdivided and displaced into an
-irregular boulder, exported as flat-shaded OBJ (no external mesh library needed)."""
+"""Low-poly procedural rock meshes: an icosphere, subdivided and displaced into an irregular boulder, exported as flat-shaded OBJ (no external mesh library needed)."""
 
 from dataclasses import dataclass
 from pathlib import Path
@@ -85,8 +84,7 @@ def icosphere(subdivisions: int) -> tuple:
 def displace_rock(
     vertices: np.ndarray, rng: np.random.Generator, roughness: float = 0.32
 ) -> np.ndarray:
-    """Smooth pseudo-random radial displacement (sum of a few random-phase standing waves) —
-    a lightweight stand-in for 3D noise, adequate at this vertex count."""
+    """Smooth pseudo-random radial displacement (sum of a few random-phase standing waves) — a lightweight stand-in for 3D noise, adequate at this vertex count."""
     displacement = np.ones(len(vertices))
     for _ in range(4):
         freq = rng.uniform(1.3, 3.2)
@@ -116,8 +114,7 @@ def generate_rock_variant(rng: np.random.Generator, subdivisions: int = 1) -> tu
 
 
 def write_obj(path: Path, vertices: np.ndarray, faces: list, name: str) -> None:
-    """Flat-shaded export: each face gets its own vertex copies and one face normal,
-    which reads as a faceted low-poly rock rather than a smoothed blob."""
+    """Flat-shaded export: each face gets its own vertex copies and one face normal, which reads as a faceted low-poly rock rather than a smoothed blob."""
     lines = [f"# Regolith procedural rock variant: {name}", f"o {name}"]
     vertex_lines, normal_lines, face_lines = [], [], []
     vi = 1

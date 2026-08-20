@@ -56,8 +56,7 @@ def test_a_straight_creep_arrives_and_is_never_cut_short():
 
 
 def test_a_slow_creep_is_not_cut_short_by_patience():
-    """Crawling at a tenth of cruise still counts as progress: 0.02 m/s clears
-    the 0.05 m improvement threshold well inside the 15 s patience window."""
+    """Crawling at a tenth of cruise still counts as progress: 0.02 m/s clears the 0.05 m improvement threshold well inside the 15 s patience window."""
     ta = approach()
     distance, t = 2.0, 0.0
     while distance > TOLERANCE_M:
@@ -68,8 +67,7 @@ def test_a_slow_creep_is_not_cut_short_by_patience():
 
 
 def test_an_orbit_terminates_instead_of_circling_forever():
-    """The failure the 1.0 m tolerance was avoiding: a rover that circles the
-    goal at a distance it never improves on. It must stop, not lap."""
+    """The failure the 1.0 m tolerance was avoiding: a rover that circles the goal at a distance it never improves on. It must stop, not lap."""
     ta = approach()
     t = 0.0
     for _ in range(int(600 / STEP_S)):  # ten minutes of sim time
@@ -84,14 +82,7 @@ def test_an_orbit_terminates_instead_of_circling_forever():
 
 
 def test_an_asymptotic_creep_that_never_arrives_still_terminates():
-    """The case `improvement_m` exists for, and the one a "did it get closer?"
-    test would wave through: every step DOES get closer, by less and less,
-    converging on 0.90 m - a goal the rover approaches forever and never
-    reaches. Losing traction on the last stretch looks exactly like this, and
-    this world has produced a not-root-caused traction failure on benign ground
-    already (PROGRESS.md, "Retraction"). Improvement has to be worth the clock
-    it renews, or the rover creeps at the goal until the mission budget runs
-    out."""
+    """The case `improvement_m` exists for, and the one a "did it get closer?" test would wave through: every step DOES get closer, by less and less, converging on 0.90 m - a goal the rover approaches forever and never reaches. Losing traction on the last stretch looks exactly like this, and this world has produced a not-root-caused traction failure on benign ground already (PROGRESS.md, "Retraction"). Improvement has to be worth the clock it renews, or the rover creeps at the goal until the mission budget runs out."""
     ta = approach()
     t, limit_m, gap_m = 0.0, 0.90, 0.60
     for _ in range(int(600 / STEP_S)):
@@ -110,8 +101,7 @@ def test_an_asymptotic_creep_that_never_arrives_still_terminates():
 
 
 def test_estimator_jitter_at_a_standstill_terminates():
-    """The same clock, against a stalled rover whose position estimate wobbles
-    by a couple of centimetres."""
+    """The same clock, against a stalled rover whose position estimate wobbles by a couple of centimetres."""
     ta = approach()
     t = 0.0
     jitter = [0.0, -0.02, 0.01, -0.015, 0.02, -0.01]  # deterministic, |e| <= 2 cm
@@ -124,9 +114,7 @@ def test_estimator_jitter_at_a_standstill_terminates():
 
 
 def test_being_pushed_away_from_the_goal_stops_at_the_closest_approach():
-    """Receding is decided against the best distance ACHIEVED, not the distance
-    on entry - a rover that got to 0.6 m and is now at 1.2 m has been carried
-    away from an arrival it nearly had."""
+    """Receding is decided against the best distance ACHIEVED, not the distance on entry - a rover that got to 0.6 m and is now at 1.2 m has been carried away from an arrival it nearly had."""
     ta = approach()
     t = 0.0
     for distance in [2.0, 1.5, 1.0, 0.6]:
@@ -138,10 +126,7 @@ def test_being_pushed_away_from_the_goal_stops_at_the_closest_approach():
 
 
 def test_termination_is_bounded_for_any_movement_whatsoever():
-    """The guarantee, against adversarial motion rather than a plausible path.
-    Each patience reset costs 0.05 m of real improvement and distance cannot go
-    below the tolerance, so the approach cannot outlast
-    (radius - tolerance) / improvement windows however the rover moves."""
+    """The guarantee, against adversarial motion rather than a plausible path. Each patience reset costs 0.05 m of real improvement and distance cannot go below the tolerance, so the approach cannot outlast (radius - tolerance) / improvement windows however the rover moves."""
     ta = approach()
     bound_s = (RADIUS_M - TOLERANCE_M) / ta.improvement_m * (PATIENCE_S + STEP_S)
     # Worst case: improve by just enough to renew the clock, as late as possible.
@@ -158,9 +143,7 @@ def test_termination_is_bounded_for_any_movement_whatsoever():
 
 
 def test_leaving_the_radius_forgets_the_approach():
-    """A rover that drives back out - a detour around a late obstacle, or a
-    recovery maneuver - gets a clean approach when it returns, rather than
-    being judged against a closest approach it made minutes ago."""
+    """A rover that drives back out - a detour around a late obstacle, or a recovery maneuver - gets a clean approach when it returns, rather than being judged against a closest approach it made minutes ago."""
     ta = approach()
     assert ta.update(1.0, 0.0) == APPROACHING
     assert ta.closest_m == 1.0
@@ -173,8 +156,7 @@ def test_leaving_the_radius_forgets_the_approach():
 
 
 def test_the_tolerance_is_what_decides_arrival():
-    """The parameter under test actually moves the stopping point: what arrives
-    at 1.0 m is still approaching at 0.35 m."""
+    """The parameter under test actually moves the stopping point: what arrives at 1.0 m is still approaching at 0.35 m."""
     loose = TerminalApproach(RADIUS_M, 1.0, GIVEBACK_M, PATIENCE_S)
     tight = TerminalApproach(RADIUS_M, 0.35, GIVEBACK_M, PATIENCE_S)
     assert loose.update(0.9, 0.0) == ARRIVED
@@ -183,9 +165,7 @@ def test_the_tolerance_is_what_decides_arrival():
 
 
 def test_closest_approach_is_never_worse_than_the_loose_tolerance_would_have_been():
-    """The safety argument for tightening: a CLOSEST_APPROACH stop can only
-    happen after the rover has already been closer than it is now, so the
-    fallback cannot leave it further out than the old 1.0 m stop would have."""
+    """The safety argument for tightening: a CLOSEST_APPROACH stop can only happen after the rover has already been closer than it is now, so the fallback cannot leave it further out than the old 1.0 m stop would have."""
     ta = approach()
     t = 0.0
     for distance in [2.5, 1.8, 0.9, 0.55]:

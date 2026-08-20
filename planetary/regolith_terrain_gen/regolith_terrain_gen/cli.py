@@ -1,6 +1,6 @@
 # Copyright 2026 Regolith Project contributors
 # SPDX-License-Identifier: Apache-2.0
-"""ros2 run regolith_terrain_gen generate_terrain --seed 42 [--output-dir DIR]"""
+"""CLI entry point: ros2 run regolith_terrain_gen generate_terrain --seed 42 [--output-dir DIR]."""
 
 import argparse
 from pathlib import Path

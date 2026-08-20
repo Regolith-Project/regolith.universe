@@ -78,7 +78,7 @@ def _sh(cmd):
 
 
 def _horizon_pose(cfg: TerrainConfig) -> str:
-    """A pose that puts a long stretch of terrain against the sky.
+    """Build a pose that puts a long stretch of terrain against the sky.
 
     The opening GUI camera sits 7 m from the rover looking down at it, which never sees
     the horizon and so cannot see this bug at all - distance is the whole mechanism.
@@ -151,8 +151,7 @@ def _read_viewport(png: Path) -> np.ndarray:
 
 
 def _sky_mask(view: np.ndarray) -> np.ndarray:
-    """Sky is the world's flat background colour - one exact RGB value, read off the
-    top of the frame rather than assumed, so no threshold is involved."""
+    """Sky is the world's flat background colour - one exact RGB value, read off the top of the frame rather than assumed, so no threshold is involved."""
     band = view[: max(1, view.shape[0] // 10)].reshape(-1, 3)
     colours, counts = np.unique(band, axis=0, return_counts=True)
     sky = colours[counts.argmax()]
@@ -205,8 +204,7 @@ def test_no_rock_stands_in_the_sky_at_range(tmp_path):
 
 @pytest.mark.render
 def test_the_check_can_actually_fail(tmp_path):
-    """Guards the guard, by the standard this package learned the hard way: a check for
-    floating rocks that has never been seen to fail is not evidence of anything."""
+    """Guards the guard, by the standard this package learned the hard way: a check for floating rocks that has never been seen to fail is not evidence of anything."""
     cfg = TerrainConfig(seed=42)
     world = generate_world(cfg, tmp_path / "world", start_paused=False)
 

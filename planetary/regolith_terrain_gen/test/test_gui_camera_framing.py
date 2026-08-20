@@ -51,9 +51,7 @@ def test_camera_is_close_enough_to_see_the_rover(seed):
 
 @pytest.mark.parametrize("seed", SEEDS)
 def test_camera_is_above_the_terrain_beneath_it(seed):
-    """Clearance is checked at the CAMERA's own (x, y), not the spawn point - terrain
-    rising behind the rover is exactly how a pose that clears the spawn elevation can
-    still end up buried."""
+    """Clearance is checked at the CAMERA's own (x, y), not the spawn point - terrain rising behind the rover is exactly how a pose that clears the spawn elevation can still end up buried."""
     _cfg, elevation_lookup, pose = _pose_and_terrain(seed)
     x, y, z = pose[0], pose[1], pose[2]
 
@@ -66,8 +64,7 @@ def test_camera_is_above_the_terrain_beneath_it(seed):
 
 @pytest.mark.parametrize("seed", SEEDS)
 def test_camera_actually_points_at_the_rover(seed):
-    """A close camera aimed the wrong way is just as blank as a distant one, and the
-    pitch/yaw are computed rather than hardcoded, so they're worth pinning down."""
+    """A close camera aimed the wrong way is just as blank as a distant one, and the pitch/yaw are computed rather than hardcoded, so they're worth pinning down."""
     cfg, elevation_lookup, pose = _pose_and_terrain(seed)
     x, y, z, _roll, pitch, yaw = pose
     sx, sy = cfg.spawn_zone_center

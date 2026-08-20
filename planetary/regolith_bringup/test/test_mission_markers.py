@@ -25,8 +25,7 @@ MARKERS_NODE = Path(__file__).resolve().parent.parent / "scripts/mission_markers
 
 
 def _load_module():
-    """Import the node module without importing rclpy - these tests are about its
-    geometry and bookkeeping, and CI has no ROS graph."""
+    """Import the node module without importing rclpy - these tests are about its geometry and bookkeeping, and CI has no ROS graph."""
     for name in (
         "rclpy",
         "rclpy.node",
@@ -51,8 +50,7 @@ markers = _load_module()
 
 
 def test_flag_sdf_is_a_single_line():
-    """The create service takes the SDF inside a protobuf text-format string, which
-    cannot contain a raw newline - one would make every spawn fail."""
+    """The create service takes the SDF inside a protobuf text-format string, which cannot contain a raw newline - one would make every spawn fail."""
     sdf = markers._flag_sdf("mission_flag_start", 1.0, -2.0, 5.5, (0.1, 0.9, 0.25))
     assert "\n" not in sdf and "\r" not in sdf
 
@@ -71,8 +69,7 @@ def test_flag_is_static_and_placed_where_asked():
 
 
 def test_flag_sdf_survives_the_protobuf_escaping():
-    """The exact round trip the node performs before handing the string to gz: every
-    quote in the SDF has to come back out as a quote, or the model never appears."""
+    """The exact round trip the node performs before handing the string to gz: every quote in the SDF has to come back out as a quote, or the model never appears."""
     sdf = markers._flag_sdf("mission_flag_active", 0.0, 0.0, 5.0, (1.0, 0.25, 0.10))
     escaped = sdf.replace("\\", "\\\\").replace('"', '\\"')
     assert '\\"' in escaped
@@ -81,8 +78,7 @@ def test_flag_sdf_survives_the_protobuf_escaping():
 
 
 def test_the_banner_hangs_off_the_top_of_the_pole():
-    """A banner drawn below its pole, or floating above it, reads as a glitch rather
-    than a flag - and it is only visible at a glance in a very dark scene."""
+    """A banner drawn below its pole, or floating above it, reads as a glitch rather than a flag - and it is only visible at a glance in a very dark scene."""
     height = markers.POLE_M
     sdf = markers._flag_sdf("f", 0.0, 0.0, 0.0, (1.0, 1.0, 1.0), height)
     banner_z = float(sdf.split('<visual name="banner"><pose>')[1].split()[2])
@@ -100,9 +96,7 @@ def test_the_banner_hangs_off_the_top_of_the_pole():
     ],
 )
 def test_a_goal_is_matched_to_the_waypoint_it_belongs_to(goal, expected):
-    """Goals are re-published by more than one node (pure pursuit and flip recovery both
-    do), so identity by proximity rather than by equality is what keeps a single
-    waypoint from sprouting a second flag beside it."""
+    """Goals are re-published by more than one node (pure pursuit and flip recovery both do), so identity by proximity rather than by equality is what keeps a single waypoint from sprouting a second flag beside it."""
     waypoints = [(12.0, 8.0), (18.0, -4.0), (4.0, -14.0), (-10.0, -6.0), (0.0, 0.0)]
     assert markers.waypoint_near(waypoints, *goal) == expected
 

@@ -14,7 +14,7 @@ from regolith_terrain_gen.terrain_mesh import mesh_surface_lookup
 
 
 def build_heightmap(cfg: TerrainConfig, rng: np.random.Generator) -> tuple:
-    """Returns (raw_heightmap, visual_heightmap, craters, elevation_lookup).
+    """Return (raw_heightmap, visual_heightmap, craters, elevation_lookup).
 
     raw_heightmap is the full fine-resolution fBm + regional-slope + crater terrain -
     kept around only so build_terrain_collision_boxes_sdf can re-derive the smoothed
@@ -90,9 +90,7 @@ def build_heightmap(cfg: TerrainConfig, rng: np.random.Generator) -> tuple:
 
 
 def save_heightmap_png(heightmap: np.ndarray, path: Path) -> tuple:
-    """Save as a 16-bit grayscale PNG and return (z_min_m, z_span_m), the vertical
-    offset and range worldgen.py must feed into the <heightmap> element's <pos> z and
-    <size> z so that gz renders this array back at its true absolute elevations.
+    """Save as a 16-bit grayscale PNG and return (z_min_m, z_span_m), the vertical offset and range worldgen.py must feed into the <heightmap> element's <pos> z and <size> z so that gz renders this array back at its true absolute elevations.
 
     CRITICAL - gz normalizes the heightmap image by its OWN min/max, not linearly.
     gz-sim's ogre2 heightmap stretches whatever pixel range the PNG actually contains
@@ -134,7 +132,8 @@ def save_heightmap_png(heightmap: np.ndarray, path: Path) -> tuple:
     This is what made rocks visibly float: they are seated on elevation_lookup, which
     matches the COLLISION surface, while the ground being DRAWN was that surface
     transposed - so a rock sat in the air wherever surface(y, x) < surface(x, y), and
-    sank wherever it was greater. See PROGRESS.md "Rendered terrain was transposed"."""
+    sank wherever it was greater. See PROGRESS.md "Rendered terrain was transposed".
+    """
     z_min = float(heightmap.min())
     z_max = float(heightmap.max())
     span = z_max - z_min
@@ -165,7 +164,8 @@ def _smooth_surface(averaged: np.ndarray, passes: int) -> np.ndarray:
     Measured on seed 42 at grid_resolution=24: max boundary lip drops from
     1.11 m (raw) to 0.10 m at 3 passes, and the fraction of boundaries with a
     lip taller than the 0.09 m wheel radius from 31 % to 0 % - all with the SAME
-    576 boxes, so physics real-time factor is unchanged."""
+    576 boxes, so physics real-time factor is unchanged.
+    """
     a = averaged
     for _ in range(max(0, passes)):
         ap = np.pad(a, ((0, 0), (1, 1)), mode="edge")
@@ -176,12 +176,7 @@ def _smooth_surface(averaged: np.ndarray, passes: int) -> np.ndarray:
 
 
 def _build_smoothed_surface(heightmap: np.ndarray, cfg: TerrainConfig) -> dict:
-    """The coarse, blurred, per-cell tangent-plane model of the terrain that
-    build_terrain_collision_boxes_sdf turns into physics boxes AND
-    _synthesize_visual_heightmap turns into the rendered ground - factored out
-    so both can never drift out of sync with each other. See
-    build_terrain_collision_boxes_sdf's docstring for why each step (block
-    averaging, blurring, per-cell tilt) exists.
+    """Build the coarse, blurred, per-cell tangent-plane model of the terrain that build_terrain_collision_boxes_sdf turns into physics boxes AND _synthesize_visual_heightmap turns into the rendered ground - factored out so both can never drift out of sync with each other. See build_terrain_collision_boxes_sdf's docstring for why each step (block averaging, blurring, per-cell tilt) exists.
 
     cfg.collision_grid_resolution/collision_overlap_frac/collision_smoothing_passes
     were previously separate keyword defaults on build_terrain_collision_boxes_sdf;
@@ -229,15 +224,7 @@ def _build_smoothed_surface(heightmap: np.ndarray, cfg: TerrainConfig) -> dict:
 def _synthesize_visual_heightmap(
     heightmap: np.ndarray, cfg: TerrainConfig, grid: dict
 ) -> np.ndarray:
-    """Evaluate the SAME tilted collision plane build_terrain_collision_boxes_sdf turns
-    into physics boxes, at every full-resolution heightmap pixel - so the rendered
-    <heightmap> visual is, cell by cell, the exact surface the rover physically stands
-    on (see the mismatch note in build_heightmap). Pixels beyond the cropped ``usable``
-    region (a <3 m strip at the +x/+y edge lost to the block-size crop, see
-    _build_smoothed_surface) are clamped to their nearest valid cell's plane - that
-    strip has no collision coverage at all regardless, a pre-existing edge condition
-    well outside the ~9 m spawn zone the rover actually operates in.
-    """
+    """Evaluate the SAME tilted collision plane build_terrain_collision_boxes_sdf turns into physics boxes, at every full-resolution heightmap pixel - so the rendered <heightmap> visual is, cell by cell, the exact surface the rover physically stands on (see the mismatch note in build_heightmap). Pixels beyond the cropped ``usable`` region (a <3 m strip at the +x/+y edge lost to the block-size crop, see _build_smoothed_surface) are clamped to their nearest valid cell's plane - that strip has no collision coverage at all regardless, a pre-existing edge condition well outside the ~9 m spawn zone the rover actually operates in."""
     n = heightmap.shape[0]
     px_per_m = (n - 1) / cfg.world_size_m
     rows_blocks, cols_blocks, block = grid["rows_blocks"], grid["cols_blocks"], grid["block"]
@@ -259,8 +246,7 @@ def _synthesize_visual_heightmap(
 
 
 def build_terrain_collision_boxes_sdf(heightmap: np.ndarray, cfg: TerrainConfig) -> str:
-    """Box collision(s) approximating the terrain - <collision> elements to
-    embed in the SAME model/link as the visual <heightmap> (see worldgen.py).
+    """Box collision(s) approximating the terrain - <collision> elements to embed in the SAME model/link as the visual <heightmap> (see worldgen.py).
 
     Both gz-sim's native <heightmap> collision geometry AND generic <mesh>
     collision geometry are unimplemented for dartsim in this gz-sim 8 /

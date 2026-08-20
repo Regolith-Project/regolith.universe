@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 # Copyright 2026 Regolith Project contributors
 # SPDX-License-Identifier: Apache-2.0
-"""Republishes /imu and /odom with non-zero covariance filled in, and fixes the
-IMU's frame_id so robot_localization can actually use it.
+"""Republishes /imu and /odom with non-zero covariance filled in, and fixes the IMU's frame_id so robot_localization can actually use it.
 
 gz-sim's IMU and DiffDrive-odometry outputs both publish all-zero covariance
 matrices (no noise model configured), which by REP-145 convention means

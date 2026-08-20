@@ -1,14 +1,12 @@
 # Copyright 2026 Regolith Project contributors
 # SPDX-License-Identifier: Apache-2.0
-"""Assemble the generated heightmap, textures, and rock scatter into a Gazebo world SDF,
-plus a JSON manifest that downstream packages (costmap, planner) can consume."""
+"""Assemble the generated heightmap, textures, and rock scatter into a Gazebo world SDF, plus a JSON manifest that downstream packages (costmap, planner) can consume."""
 
 import json
 from pathlib import Path
 
 import numpy as np
 from regolith_terrain_gen.config import TerrainConfig
-from regolith_terrain_gen.craters import Crater
 from regolith_terrain_gen.scatter import RockInstance
 
 _GUI_BLOCK = """    <gui fullscreen="false">
@@ -149,8 +147,7 @@ _CAM_TARGET_HEIGHT_M = 0.17
 
 
 def _gui_camera_pose(cfg: TerrainConfig, elevation_lookup=None) -> str:
-    """Opening GUI camera pose, placed relative to the actual terrain height at the
-    spawn point.
+    """Compute the opening GUI camera pose, placed relative to the actual terrain height at the spawn point.
 
     The pose used to be a hardcoded absolute string, which silently assumed a terrain
     elevation: spawn elevation is seed-dependent (5.2 m for seed 42, 6.1 m for seed 7,
