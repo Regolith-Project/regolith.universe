@@ -5,17 +5,14 @@ the rendered heightmap and the collision boxes the rover actually rests on must 
 the same surface, everywhere, for every seed - not just close enough on average.
 """
 
+from PIL import Image
 import numpy as np
 import pytest
-from PIL import Image
-
 from regolith_terrain_gen.config import TerrainConfig
-from regolith_terrain_gen.heightmap import (
-    _build_smoothed_surface,
-    build_heightmap,
-    build_terrain_collision_boxes_sdf,
-    save_heightmap_png,
-)
+from regolith_terrain_gen.heightmap import _build_smoothed_surface
+from regolith_terrain_gen.heightmap import build_heightmap
+from regolith_terrain_gen.heightmap import build_terrain_collision_boxes_sdf
+from regolith_terrain_gen.heightmap import save_heightmap_png
 
 WHEEL_RADIUS_M = 0.09
 
@@ -24,8 +21,16 @@ def _collision_top_z(grid: dict, x: float, y: float) -> float:
     """Height of the tilted collision plane at (x, y), independent of the
     production _synthesize_visual_heightmap code path (so this test doesn't just
     check the synthesis function against itself)."""
-    col = int(np.clip(round((x + grid["half_world"]) / grid["cell_size_m"] - 0.5), 0, grid["cols_blocks"] - 1))
-    row = int(np.clip(round((y + grid["half_world"]) / grid["cell_size_m"] - 0.5), 0, grid["rows_blocks"] - 1))
+    col = int(
+        np.clip(
+            round((x + grid["half_world"]) / grid["cell_size_m"] - 0.5), 0, grid["cols_blocks"] - 1
+        )
+    )
+    row = int(
+        np.clip(
+            round((y + grid["half_world"]) / grid["cell_size_m"] - 0.5), 0, grid["rows_blocks"] - 1
+        )
+    )
     h0 = grid["surface"][row, col]
     gx = grid["grad_x"][row, col]
     gy = grid["grad_y"][row, col]

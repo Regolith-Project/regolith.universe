@@ -3,14 +3,18 @@
 """Plans a cost-aware path from the current (EKF-estimated) pose to an RViz
 "2D Goal Pose" click, over the /costmap published by regolith_costmap."""
 
+from geometry_msgs.msg import PoseStamped
+from nav_msgs.msg import OccupancyGrid
+from nav_msgs.msg import Odometry
+from nav_msgs.msg import Path
 import numpy as np
 import rclpy
-from geometry_msgs.msg import PoseStamped
-from nav_msgs.msg import Odometry, OccupancyGrid, Path
 from rclpy.node import Node
-from rclpy.qos import QoSDurabilityPolicy, QoSProfile
-
-from regolith_planner.astar import LETHAL_COST, plan_path, smooth_path
+from rclpy.qos import QoSDurabilityPolicy
+from rclpy.qos import QoSProfile
+from regolith_planner.astar import LETHAL_COST
+from regolith_planner.astar import plan_path
+from regolith_planner.astar import smooth_path
 
 
 def nearest_free_cell(cost_grid: np.ndarray, start_rc: tuple, max_radius_cells: int):
@@ -148,8 +152,7 @@ class PlannerNode(Node):
 
         self._path_pub.publish(path_msg)
         self.get_logger().info(
-            f"Planned path: {len(world_path)} waypoints, "
-            f"start={start_rc} goal={goal_rc}"
+            f"Planned path: {len(world_path)} waypoints, " f"start={start_rc} goal={goal_rc}"
         )
 
 

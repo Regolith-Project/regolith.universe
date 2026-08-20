@@ -7,7 +7,6 @@ import json
 from pathlib import Path
 
 import numpy as np
-
 from regolith_terrain_gen.config import TerrainConfig
 from regolith_terrain_gen.craters import Crater
 from regolith_terrain_gen.scatter import RockInstance

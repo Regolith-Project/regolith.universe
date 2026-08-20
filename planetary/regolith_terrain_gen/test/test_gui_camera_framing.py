@@ -13,7 +13,6 @@ Both are invisible to every other test in this suite - nothing else looks at <gu
 
 import numpy as np
 import pytest
-
 from regolith_terrain_gen.config import TerrainConfig
 from regolith_terrain_gen.heightmap import build_heightmap
 from regolith_terrain_gen.worldgen import _gui_camera_pose
@@ -76,13 +75,11 @@ def test_camera_actually_points_at_the_rover(seed):
 
     # Unit vector the camera looks along, for gz's x-forward camera convention:
     # positive pitch tilts the view down.
-    forward = np.array(
-        [np.cos(pitch) * np.cos(yaw), np.cos(pitch) * np.sin(yaw), -np.sin(pitch)]
-    )
+    forward = np.array([np.cos(pitch) * np.cos(yaw), np.cos(pitch) * np.sin(yaw), -np.sin(pitch)])
     to_rover = np.array([sx - x, sy - y, spawn_z - z])
     to_rover /= np.linalg.norm(to_rover)
 
     off_axis_deg = np.degrees(np.arccos(np.clip(forward @ to_rover, -1.0, 1.0)))
-    assert off_axis_deg < 10.0, (
-        f"seed {seed}: rover sits {off_axis_deg:.1f} deg off the camera's view axis"
-    )
+    assert (
+        off_axis_deg < 10.0
+    ), f"seed {seed}: rover sits {off_axis_deg:.1f} deg off the camera's view axis"

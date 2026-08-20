@@ -10,7 +10,6 @@ runs, each one re-approaching the obstacle that caused the last (PROGRESS.md).
 """
 
 import numpy as np
-
 from regolith_costmap.costmap_node import stamp_hazard
 
 
@@ -18,8 +17,8 @@ def test_marks_a_disc_lethal():
     grid = np.zeros((21, 21), dtype=np.int16)
     marked = stamp_hazard(grid, 10, 10, 2)
     assert grid[10, 10] == 100
-    assert grid[10, 12] == 100          # on the radius
-    assert grid[10, 13] == 0            # outside it
+    assert grid[10, 12] == 100  # on the radius
+    assert grid[10, 13] == 0  # outside it
     assert marked == int((grid == 100).sum())
 
 

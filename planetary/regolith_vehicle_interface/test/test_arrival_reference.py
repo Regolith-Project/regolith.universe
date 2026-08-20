@@ -19,8 +19,8 @@ comparison in `_control_step`.
 
 import math
 
-TOLERANCE_M = 1.5          # pure_pursuit's goal_tolerance_m
-CELL_M = 0.78125           # costmap resolution at 256 cells over 200 m
+TOLERANCE_M = 1.5  # pure_pursuit's goal_tolerance_m
+CELL_M = 0.78125  # costmap resolution at 256 cells over 200 m
 ORIGIN_M = -100.0
 
 

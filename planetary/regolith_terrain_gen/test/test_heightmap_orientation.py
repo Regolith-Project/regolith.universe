@@ -14,11 +14,11 @@ obstacles that are somewhere else. The convention it is written in is gz's, so t
 tests still assert on the ENCODED FILE rather than on any in-memory array.
 """
 
-import numpy as np
 from PIL import Image
-
+import numpy as np
 from regolith_terrain_gen.config import TerrainConfig
-from regolith_terrain_gen.heightmap import build_heightmap, save_heightmap_png
+from regolith_terrain_gen.heightmap import build_heightmap
+from regolith_terrain_gen.heightmap import save_heightmap_png
 
 
 def _decode(path, z_min, z_span):

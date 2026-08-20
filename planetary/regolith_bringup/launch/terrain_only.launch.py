@@ -2,11 +2,13 @@
 # SPDX-License-Identifier: Apache-2.0
 """Generates a procedural lunar terrain world for the given seed and opens it in Gazebo.
 
-    ros2 launch regolith_bringup terrain_only.launch.py seed:=42
+ros2 launch regolith_bringup terrain_only.launch.py seed:=42
 """
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction
+from launch.actions import DeclareLaunchArgument
+from launch.actions import IncludeLaunchDescription
+from launch.actions import OpaqueFunction
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.substitutions import FindPackageShare
@@ -31,9 +33,7 @@ def _generate_and_launch(context, *args, **kwargs):
     world_sdf_path = generate_world(cfg, default_output_dir(seed))
 
     gz_sim = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            [FindPackageShare("ros_gz_sim"), "/launch/gz_sim.launch.py"]
-        ),
+        PythonLaunchDescriptionSource([FindPackageShare("ros_gz_sim"), "/launch/gz_sim.launch.py"]),
         launch_arguments={"gz_args": str(world_sdf_path)}.items(),
     )
     return [gz_sim]
@@ -42,7 +42,9 @@ def _generate_and_launch(context, *args, **kwargs):
 def generate_launch_description() -> LaunchDescription:
     return LaunchDescription(
         [
-            DeclareLaunchArgument("seed", default_value="42", description="Terrain generation seed"),
+            DeclareLaunchArgument(
+                "seed", default_value="42", description="Terrain generation seed"
+            ),
             OpaqueFunction(function=_generate_and_launch),
         ]
     )

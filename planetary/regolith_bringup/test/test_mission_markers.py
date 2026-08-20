@@ -15,8 +15,8 @@ is the part that is pure logic and the part that failed first in practice:
 """
 
 import importlib.util
-import sys
 from pathlib import Path
+import sys
 from unittest import mock
 
 import pytest
@@ -27,9 +27,19 @@ MARKERS_NODE = Path(__file__).resolve().parent.parent / "scripts/mission_markers
 def _load_module():
     """Import the node module without importing rclpy - these tests are about its
     geometry and bookkeeping, and CI has no ROS graph."""
-    for name in ("rclpy", "rclpy.node", "rclpy.qos", "geometry_msgs", "geometry_msgs.msg",
-                 "nav_msgs", "nav_msgs.msg", "std_msgs", "std_msgs.msg",
-                 "visualization_msgs", "visualization_msgs.msg"):
+    for name in (
+        "rclpy",
+        "rclpy.node",
+        "rclpy.qos",
+        "geometry_msgs",
+        "geometry_msgs.msg",
+        "nav_msgs",
+        "nav_msgs.msg",
+        "std_msgs",
+        "std_msgs.msg",
+        "visualization_msgs",
+        "visualization_msgs.msg",
+    ):
         sys.modules.setdefault(name, mock.MagicMock())
     spec = importlib.util.spec_from_file_location("mission_markers_node", MARKERS_NODE)
     module = importlib.util.module_from_spec(spec)
@@ -83,10 +93,10 @@ def test_the_banner_hangs_off_the_top_of_the_pole():
 @pytest.mark.parametrize(
     "goal, expected",
     [
-        ((12.0, 8.0), 0),        # exactly a planned waypoint
-        ((12.4, 8.3), 0),        # a re-publish nudged within tolerance
+        ((12.0, 8.0), 0),  # exactly a planned waypoint
+        ((12.4, 8.3), 0),  # a re-publish nudged within tolerance
         ((4.0, -14.0), 2),
-        ((-30.0, 25.0), None),   # an ad-hoc goal clicked in RViz
+        ((-30.0, 25.0), None),  # an ad-hoc goal clicked in RViz
     ],
 )
 def test_a_goal_is_matched_to_the_waypoint_it_belongs_to(goal, expected):

@@ -5,7 +5,6 @@
 from dataclasses import dataclass
 
 import numpy as np
-
 from regolith_terrain_gen.config import TerrainConfig
 
 

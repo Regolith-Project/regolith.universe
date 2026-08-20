@@ -15,12 +15,16 @@ set_pose righting, after which this node's attitude check clears and following
 resumes automatically.
 """
 
+from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import Twist
+from nav_msgs.msg import OccupancyGrid
+from nav_msgs.msg import Odometry
+from nav_msgs.msg import Path
 import numpy as np
 import rclpy
-from geometry_msgs.msg import PoseStamped, Twist
-from nav_msgs.msg import Odometry, OccupancyGrid, Path
 from rclpy.node import Node
-from rclpy.qos import QoSDurabilityPolicy, QoSProfile
+from rclpy.qos import QoSDurabilityPolicy
+from rclpy.qos import QoSProfile
 from sensor_msgs.msg import Imu
 from std_msgs.msg import Bool
 
@@ -76,8 +80,14 @@ class TerminalApproach:
     seconds - so the termination guarantee can be tested directly.
     """
 
-    def __init__(self, radius_m: float, tolerance_m: float, giveback_m: float,
-                 patience_s: float, improvement_m: float = 0.05):
+    def __init__(
+        self,
+        radius_m: float,
+        tolerance_m: float,
+        giveback_m: float,
+        patience_s: float,
+        improvement_m: float = 0.05,
+    ):
         self.radius_m = radius_m
         self.tolerance_m = tolerance_m
         self.giveback_m = giveback_m
@@ -90,7 +100,7 @@ class TerminalApproach:
         self.reset()
 
     def reset(self) -> None:
-        self.closest_m = None      # best distance achieved this approach
+        self.closest_m = None  # best distance achieved this approach
         self._progress_ref_m = None  # distance at the last patience-clock reset
         self._progress_at_s = None
 
@@ -320,7 +330,12 @@ class PurePursuitNode(Node):
         if self._check_flipped():
             self._stop()
             return
-        if self._path is None or self._goal_reached or self._current_pose is None or len(self._path) == 0:
+        if (
+            self._path is None
+            or self._goal_reached
+            or self._current_pose is None
+            or len(self._path) == 0
+        ):
             return
 
         current_goal_xy = (
@@ -344,14 +359,14 @@ class PurePursuitNode(Node):
         # failed a 1.5 m bar for no other reason (path[-1] was 0.42 m off the
         # goal on seed 42). That is the same mistake as trusting /goal_reached -
         # measuring against the wrong reference - so it is fixed the same way.
-        goal_xy = (
-            np.array(current_goal_xy) if current_goal_xy is not None else self._path[-1]
-        )
+        goal_xy = np.array(current_goal_xy) if current_goal_xy is not None else self._path[-1]
         distance_to_goal = float(np.linalg.norm(goal_xy - position))
         now_s = self.get_clock().now().nanoseconds / 1e9
         outcome = self._terminal.update(distance_to_goal, now_s)
         if outcome == ARRIVED:
-            self._finish_goal(f"Goal reached (within {distance_to_goal:.2f} m of the commanded goal)")
+            self._finish_goal(
+                f"Goal reached (within {distance_to_goal:.2f} m of the commanded goal)"
+            )
             return
         if outcome == CLOSEST_APPROACH:
             # Bounded rather than circling - see TerminalApproach. Reported as
@@ -376,7 +391,9 @@ class PurePursuitNode(Node):
         target_idx = nearest_idx
         accumulated = 0.0
         while target_idx < len(self._path) - 1 and accumulated < lookahead_m:
-            accumulated += float(np.linalg.norm(self._path[target_idx + 1] - self._path[target_idx]))
+            accumulated += float(
+                np.linalg.norm(self._path[target_idx + 1] - self._path[target_idx])
+            )
             target_idx += 1
         target_xy = self._path[target_idx]
         if target_idx == len(self._path) - 1:
@@ -385,7 +402,9 @@ class PurePursuitNode(Node):
             # half-metre instead of parking next to it.
             target_xy = goal_xy
 
-        heading_to_target = float(np.arctan2(target_xy[1] - position[1], target_xy[0] - position[0]))
+        heading_to_target = float(
+            np.arctan2(target_xy[1] - position[1], target_xy[0] - position[0])
+        )
         alpha = _normalize_angle(heading_to_target - yaw)
 
         max_angular = self.get_parameter("max_angular_velocity").value
@@ -416,7 +435,9 @@ class PurePursuitNode(Node):
         now = self.get_clock().now()
         deviation_limit = self.get_parameter("path_deviation_limit_m").value
         if deviation > deviation_limit:
-            self.get_logger().warn(f"Deviated {deviation:.2f} m from path - stopping and replanning")
+            self.get_logger().warn(
+                f"Deviated {deviation:.2f} m from path - stopping and replanning"
+            )
             self._stop()
             self._replan()
             return True
@@ -457,7 +478,7 @@ class PurePursuitNode(Node):
                 f"{self._replan_count} consecutive deviate/stall replans with no progress - "
                 "not retrying it again until a genuinely new /goal_pose arrives. (This cap "
                 "exists so an unreachable goal can't loop forever - see PROGRESS.md's "
-                "\"overnight freeze\" note for why.)"
+                '"overnight freeze" note for why.)'
             )
             return
 

@@ -5,9 +5,8 @@ high (and slightly varying) roughness."""
 
 from pathlib import Path
 
-import numpy as np
 from PIL import Image
-
+import numpy as np
 from regolith_terrain_gen.noise import value_noise_2d
 
 
@@ -20,12 +19,15 @@ def generate_albedo(resolution: int, rng: np.random.Generator) -> np.ndarray:
     variation = value_noise_2d((resolution, resolution), resolution / 6.0, rng)
     variation = (variation - variation.min()) / (variation.max() - variation.min() + 1e-9)
     grey = 0.42 + 0.12 * variation  # dark lunar regolith, ~0.42-0.54 albedo
-    rgb = np.stack([grey, grey, grey * 1.01], axis=-1)  # imperceptibly cool grey, not literally flat
+    rgb = np.stack(
+        [grey, grey, grey * 1.01], axis=-1
+    )  # imperceptibly cool grey, not literally flat
     return _to_uint8(rgb)
 
 
-def _small_crater_pits(resolution: int, rng: np.random.Generator, tile_size_m: float,
-                       count: int) -> np.ndarray:
+def _small_crater_pits(
+    resolution: int, rng: np.random.Generator, tile_size_m: float, count: int
+) -> np.ndarray:
     """A height field of small bowl-and-rim pits, for craters too small to be geometry.
 
     The rendered/collided surface is the coarse collision grid, so craters below roughly
@@ -46,8 +48,10 @@ def _small_crater_pits(resolution: int, rng: np.random.Generator, tile_size_m: f
         radius_px = rng.uniform(0.4, 2.5) / 2.0 * px_per_m
         cx, cy = rng.uniform(0, resolution, size=2)
         # Wrap distance so pits crossing the tile edge stay seamless.
-        dx = np.abs(xx - cx); dx = np.minimum(dx, resolution - dx)
-        dy = np.abs(yy - cy); dy = np.minimum(dy, resolution - dy)
+        dx = np.abs(xx - cx)
+        dx = np.minimum(dx, resolution - dx)
+        dy = np.abs(yy - cy)
+        dy = np.minimum(dy, resolution - dy)
         x_norm = np.hypot(dx, dy) / max(radius_px, 1e-6)
         bowl = np.where(x_norm <= 1.0, -(1.0 - x_norm**2), 0.0)
         rim = np.exp(-(((x_norm - 1.0) / 0.35) ** 2))
@@ -55,8 +59,13 @@ def _small_crater_pits(resolution: int, rng: np.random.Generator, tile_size_m: f
     return field
 
 
-def generate_normal_map(resolution: int, rng: np.random.Generator, strength: float = 0.35,
-                        tile_size_m: float = 20.0, pit_count: int = 26) -> np.ndarray:
+def generate_normal_map(
+    resolution: int,
+    rng: np.random.Generator,
+    strength: float = 0.35,
+    tile_size_m: float = 20.0,
+    pit_count: int = 26,
+) -> np.ndarray:
     """High-frequency micro-detail (small rocks/regolith grain) plus sub-resolution
     crater pitting, encoded as a tangent-space normal map."""
     detail = value_noise_2d((resolution, resolution), 18.0, rng) + 0.5 * value_noise_2d(
@@ -82,8 +91,9 @@ def generate_roughness_map(resolution: int, rng: np.random.Generator) -> np.ndar
     return _to_uint8(np.stack([roughness] * 3, axis=-1))
 
 
-def generate_textures(output_dir: Path, resolution: int, rng: np.random.Generator,
-                      tile_size_m: float = 20.0) -> dict:
+def generate_textures(
+    output_dir: Path, resolution: int, rng: np.random.Generator, tile_size_m: float = 20.0
+) -> dict:
     output_dir.mkdir(parents=True, exist_ok=True)
     paths = {}
     for name, array in (

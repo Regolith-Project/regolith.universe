@@ -11,7 +11,6 @@ keep-out zones were added to fix, so the escape hatch is load-bearing.
 """
 
 import numpy as np
-
 from regolith_planner.astar import LETHAL_COST
 from regolith_planner.planner_node import nearest_free_cell
 

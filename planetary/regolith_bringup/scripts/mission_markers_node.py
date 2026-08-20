@@ -35,16 +35,20 @@ visualisation, and it must never be able to take the demo down with it.
 
 import json
 import math
-import subprocess
 from pathlib import Path
+import subprocess
 
-import rclpy
 from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Path as PathMsg
+import rclpy
 from rclpy.node import Node
-from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
-from std_msgs.msg import Bool, ColorRGBA
-from visualization_msgs.msg import Marker, MarkerArray
+from rclpy.qos import DurabilityPolicy
+from rclpy.qos import QoSProfile
+from rclpy.qos import ReliabilityPolicy
+from std_msgs.msg import Bool
+from std_msgs.msg import ColorRGBA
+from visualization_msgs.msg import Marker
+from visualization_msgs.msg import MarkerArray
 
 # Bright and emissive on purpose: the scene is lit by a 12 deg sun and is very dark, so
 # a flag with an ordinary diffuse material reads as a grey smudge.
@@ -82,7 +86,7 @@ def _flag_sdf(name, x, y, z, rgb, height=POLE_M) -> str:
     r, g, b = rgb
     return (
         f'<sdf version="1.10"><model name="{name}"><static>true</static>'
-        f"<pose>{x:.3f} {y:.3f} {z:.3f} 0 0 0</pose><link name=\"link\">"
+        f'<pose>{x:.3f} {y:.3f} {z:.3f} 0 0 0</pose><link name="link">'
         f'<visual name="pole"><pose>0 0 {height / 2:.3f} 0 0 0</pose>'
         f"<geometry><cylinder><radius>0.035</radius><length>{height:.3f}</length>"
         f"</cylinder></geometry><material><ambient>0.7 0.7 0.7 1</ambient>"
@@ -110,11 +114,11 @@ class MissionMarkersNode(Node):
         self._start_xy = (0.0, 0.0)
         self._load_terrain()
 
-        self._waypoints = []          # planned, from /mission_waypoints
-        self._reached = set()         # indices of waypoints already visited
-        self._active = None           # (x, y) of the current /goal_pose
-        self._active_index = None     # which planned waypoint it is, if any
-        self._spawned = set()         # Gazebo model names created so far
+        self._waypoints = []  # planned, from /mission_waypoints
+        self._reached = set()  # indices of waypoints already visited
+        self._active = None  # (x, y) of the current /goal_pose
+        self._active_index = None  # which planned waypoint it is, if any
+        self._spawned = set()  # Gazebo model names created so far
         # Flags asked for but not yet accepted by gz. The world takes ~20 s to load
         # 190 rocks and the terrain mesh, and its create service refuses entities until
         # it is up - so a flag requested at startup is normally rejected once. First
@@ -180,9 +184,7 @@ class MissionMarkersNode(Node):
     # ---- subscriptions ---------------------------------------------------------
 
     def _on_waypoints(self, msg: PathMsg) -> None:
-        self._waypoints = [
-            (float(p.pose.position.x), float(p.pose.position.y)) for p in msg.poses
-        ]
+        self._waypoints = [(float(p.pose.position.x), float(p.pose.position.y)) for p in msg.poses]
         self.get_logger().info(f"Mission has {len(self._waypoints)} planned waypoints")
         self._place_waypoint_flags()
         self._publish_markers()
@@ -207,9 +209,18 @@ class MissionMarkersNode(Node):
 
     def _gz(self, service: str, reqtype: str, req: str) -> bool:
         cmd = [
-            "gz", "service", "-s", f"/world/{self._world}/{service}",
-            "--reqtype", reqtype, "--reptype", "gz.msgs.Boolean",
-            "--timeout", "3000", "--req", req,
+            "gz",
+            "service",
+            "-s",
+            f"/world/{self._world}/{service}",
+            "--reqtype",
+            reqtype,
+            "--reptype",
+            "gz.msgs.Boolean",
+            "--timeout",
+            "3000",
+            "--req",
+            req,
         ]
         try:
             out = subprocess.run(cmd, capture_output=True, text=True, timeout=8)
@@ -229,7 +240,8 @@ class MissionMarkersNode(Node):
             sdf = _flag_sdf(name, x, y, self._ground(x, y), rgb, height)
             escaped = sdf.replace("\\", "\\\\").replace('"', '\\"')
             if self._gz(
-                "create", "gz.msgs.EntityFactory",
+                "create",
+                "gz.msgs.EntityFactory",
                 f'sdf: "{escaped}" name: "{name}" allow_renaming: false',
             ):
                 self._spawned.add(name)
@@ -273,7 +285,8 @@ class MissionMarkersNode(Node):
             self._request_flag("mission_flag_active", x, y, ACTIVE_RGB, ACTIVE_POLE_M)
             return
         self._gz(
-            "set_pose", "gz.msgs.Pose",
+            "set_pose",
+            "gz.msgs.Pose",
             f'name: "mission_flag_active" '
             f"position {{ x: {x:.3f} y: {y:.3f} z: {self._ground(x, y):.3f} }} "
             f"orientation {{ x: 0 y: 0 z: 0 w: 1 }}",
@@ -286,8 +299,12 @@ class MissionMarkersNode(Node):
         array.markers.append(self._delete_all())
         finishes_here = any(self._is_the_start(x, y) for x, y in self._waypoints)
         array.markers += self._flag_markers(
-            "start", 0, *self._start_xy, START_RGB,
-            "START / FINISH" if finishes_here else "START", POLE_M,
+            "start",
+            0,
+            *self._start_xy,
+            START_RGB,
+            "START / FINISH" if finishes_here else "START",
+            POLE_M,
         )
 
         for i, (x, y) in enumerate(self._waypoints):

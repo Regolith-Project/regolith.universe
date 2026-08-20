@@ -12,19 +12,44 @@ _PHI = (1.0 + 5.0**0.5) / 2.0
 
 _ICOSAHEDRON_VERTICES = np.array(
     [
-        [-1, _PHI, 0], [1, _PHI, 0], [-1, -_PHI, 0], [1, -_PHI, 0],
-        [0, -1, _PHI], [0, 1, _PHI], [0, -1, -_PHI], [0, 1, -_PHI],
-        [_PHI, 0, -1], [_PHI, 0, 1], [-_PHI, 0, -1], [-_PHI, 0, 1],
+        [-1, _PHI, 0],
+        [1, _PHI, 0],
+        [-1, -_PHI, 0],
+        [1, -_PHI, 0],
+        [0, -1, _PHI],
+        [0, 1, _PHI],
+        [0, -1, -_PHI],
+        [0, 1, -_PHI],
+        [_PHI, 0, -1],
+        [_PHI, 0, 1],
+        [-_PHI, 0, -1],
+        [-_PHI, 0, 1],
     ],
     dtype=np.float64,
 )
 _ICOSAHEDRON_VERTICES /= np.linalg.norm(_ICOSAHEDRON_VERTICES[0])
 
 _ICOSAHEDRON_FACES = [
-    (0, 11, 5), (0, 5, 1), (0, 1, 7), (0, 7, 10), (0, 10, 11),
-    (1, 5, 9), (5, 11, 4), (11, 10, 2), (10, 7, 6), (7, 1, 8),
-    (3, 9, 4), (3, 4, 2), (3, 2, 6), (3, 6, 8), (3, 8, 9),
-    (4, 9, 5), (2, 4, 11), (6, 2, 10), (8, 6, 7), (9, 8, 1),
+    (0, 11, 5),
+    (0, 5, 1),
+    (0, 1, 7),
+    (0, 7, 10),
+    (0, 10, 11),
+    (1, 5, 9),
+    (5, 11, 4),
+    (11, 10, 2),
+    (10, 7, 6),
+    (7, 1, 8),
+    (3, 9, 4),
+    (3, 4, 2),
+    (3, 2, 6),
+    (3, 6, 8),
+    (3, 8, 9),
+    (4, 9, 5),
+    (2, 4, 11),
+    (6, 2, 10),
+    (8, 6, 7),
+    (9, 8, 1),
 ]
 
 
@@ -57,7 +82,9 @@ def icosphere(subdivisions: int) -> tuple:
     return np.array(vertices), faces
 
 
-def displace_rock(vertices: np.ndarray, rng: np.random.Generator, roughness: float = 0.32) -> np.ndarray:
+def displace_rock(
+    vertices: np.ndarray, rng: np.random.Generator, roughness: float = 0.32
+) -> np.ndarray:
     """Smooth pseudo-random radial displacement (sum of a few random-phase standing waves) —
     a lightweight stand-in for 3D noise, adequate at this vertex count."""
     displacement = np.ones(len(vertices))
@@ -153,7 +180,9 @@ def fit_collision_ellipsoid(vertices: np.ndarray) -> np.ndarray:
     return np.max(np.abs(vertices), axis=0)
 
 
-def generate_rock_variants(output_dir: Path, count: int, rng: np.random.Generator, subdivisions: int = 1) -> list:
+def generate_rock_variants(
+    output_dir: Path, count: int, rng: np.random.Generator, subdivisions: int = 1
+) -> list:
     output_dir.mkdir(parents=True, exist_ok=True)
     variants = []
     for i in range(count):
@@ -161,6 +190,8 @@ def generate_rock_variants(output_dir: Path, count: int, rng: np.random.Generato
         name = f"rock_{i}"
         write_obj(output_dir / f"{name}.obj", vertices, faces, name)
         variants.append(
-            RockVariant(name=name, vertices=vertices, collision_radii=fit_collision_ellipsoid(vertices))
+            RockVariant(
+                name=name, vertices=vertices, collision_radii=fit_collision_ellipsoid(vertices)
+            )
         )
     return variants

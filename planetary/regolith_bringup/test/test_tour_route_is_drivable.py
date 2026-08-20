@@ -27,9 +27,10 @@ import math
 
 import numpy as np
 import pytest
-
-from regolith_costmap.costmap_node import build_costmap, load_heightmap
-from regolith_planner.astar import LETHAL_COST, plan_path
+from regolith_costmap.costmap_node import build_costmap
+from regolith_costmap.costmap_node import load_heightmap
+from regolith_planner.astar import LETHAL_COST
+from regolith_planner.astar import plan_path
 from regolith_planner.tour import plan_tour
 from regolith_terrain_gen.config import TerrainConfig
 from regolith_terrain_gen.generate import generate_world
@@ -53,8 +54,11 @@ def costmaps(tmp_path_factory):
         generate_world(TerrainConfig(seed=seed), world, start_paused=True)
         manifest = json.loads((world / "manifest.json").read_text())
         grid, resolution, origin_x, origin_y = build_costmap(
-            manifest, load_heightmap(manifest),
-            RESOLUTION_M, ROVER_RADIUS_M, SLOPE_LETHAL_DEG,
+            manifest,
+            load_heightmap(manifest),
+            RESOLUTION_M,
+            ROVER_RADIUS_M,
+            SLOPE_LETHAL_DEG,
         )
         grids[seed] = (np.asarray(grid), resolution, origin_x, origin_y)
     return grids
@@ -72,7 +76,7 @@ def test_no_waypoint_lands_on_terrain_the_planner_refuses(costmaps, seed):
 
     for i, waypoint in enumerate(route):
         row, col = _cell(waypoint, resolution, origin_x, origin_y)
-        block = grid[row - 1:row + 2, col - 1:col + 2]
+        block = grid[row - 1 : row + 2, col - 1 : col + 2]
         assert not (block >= LETHAL_COST).any(), (
             f"seed {seed}: waypoint {i + 1} at {waypoint} is on or beside a lethal cell - "
             f"the planner will refuse it and the leg will burn its 90 s timeout"
@@ -92,9 +96,7 @@ def test_every_leg_is_plannable_by_the_planner_that_will_drive_it(costmaps, seed
             _cell(points[i], resolution, origin_x, origin_y),
             _cell(points[i + 1], resolution, origin_x, origin_y),
         )
-        assert path, (
-            f"seed {seed}: leg {i + 1}, {points[i]} -> {points[i + 1]}, has no path"
-        )
+        assert path, f"seed {seed}: leg {i + 1}, {points[i]} -> {points[i + 1]}, has no path"
 
 
 @pytest.mark.parametrize("seed", SEEDS)

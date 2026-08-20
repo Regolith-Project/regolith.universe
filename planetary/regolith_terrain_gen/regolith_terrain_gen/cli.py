@@ -14,7 +14,9 @@ def default_output_dir(seed: int) -> Path:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Generate a procedural lunar terrain world for Regolith.")
+    parser = argparse.ArgumentParser(
+        description="Generate a procedural lunar terrain world for Regolith."
+    )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--output-dir", type=str, default=None)
     args = parser.parse_args()

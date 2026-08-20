@@ -17,7 +17,7 @@ those packages rather than in the `regolith` meta-repo.
   (never a hard-coded height - see PROGRESS.md M2 for why that matters),
   and bridges `cmd_vel`/`odom`/`imu`/`camera`/`camera_info`/`joint_states`/`tf`
   between ROS and Gazebo. `ros2 launch regolith_bringup teleop_demo.launch.py
-  seed:=42`, then in another terminal:
+seed:=42`, then in another terminal:
   `ros2 run teleop_twist_keyboard teleop_twist_keyboard`
 - `localization_demo.launch.py` - everything `teleop_demo` does, plus fuses
   wheel odometry + IMU into an estimated pose (`robot_localization`'s

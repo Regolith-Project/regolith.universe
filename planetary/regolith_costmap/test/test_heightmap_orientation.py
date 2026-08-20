@@ -15,11 +15,11 @@ whichever way round the array is read. Only per-cell positions differ.
 
 import json
 
+from PIL import Image
 import numpy as np
 import pytest
-from PIL import Image
-
-from regolith_costmap.costmap_node import build_costmap, load_heightmap
+from regolith_costmap.costmap_node import build_costmap
+from regolith_costmap.costmap_node import load_heightmap
 
 WORLD_SIZE_M = 200.0
 HEIGHT_RANGE_M = 10.0

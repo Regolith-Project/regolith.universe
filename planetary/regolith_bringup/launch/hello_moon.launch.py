@@ -18,22 +18,21 @@ pass rviz:=false to skip it (e.g. for headless runs).
 import atexit
 import fcntl
 import os
+from pathlib import Path
 import random
 import subprocess
-from pathlib import Path
 
 from launch import LaunchDescription
-from launch.actions import (
-    DeclareLaunchArgument,
-    IncludeLaunchDescription,
-    OpaqueFunction,
-    RegisterEventHandler,
-    Shutdown,
-)
+from launch.actions import DeclareLaunchArgument
+from launch.actions import IncludeLaunchDescription
+from launch.actions import OpaqueFunction
+from launch.actions import RegisterEventHandler
+from launch.actions import Shutdown
 from launch.conditions import IfCondition
 from launch.event_handlers import OnProcessExit
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration, PythonExpression
+from launch.substitutions import LaunchConfiguration
+from launch.substitutions import PythonExpression
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 
@@ -174,7 +173,9 @@ def _bake_rover_model_sdf(rover_urdf_path: Path, spawn_z: float) -> str:
     """
     converted = subprocess.run(
         ["gz", "sdf", "-p", str(rover_urdf_path)],
-        capture_output=True, text=True, check=True,
+        capture_output=True,
+        text=True,
+        check=True,
     ).stdout
     # gz sdf -p wraps its output in an <sdf version='...'> root element; strip that
     # down to the bare <model>...</model>, since we're splicing this directly inside
@@ -194,7 +195,7 @@ def _bake_rover_model_sdf(rover_urdf_path: Path, spawn_z: float) -> str:
         )
     return (
         f"<model name='{ROVER_NAME}'>\n    <pose>0 0 {spawn_z} 0 0 0</pose>"
-        + model_sdf[len(marker):]
+        + model_sdf[len(marker) :]
     )
 
 
@@ -242,12 +243,11 @@ def _generate_and_launch(context, *args, **kwargs):
     spawn_z = manifest["spawn_zone"]["elevation_m"] + 0.5
 
     record_video = LaunchConfiguration("record_video").perform(context)
-    xacro_path = FindPackageShare("regolith_rover_description").find(
-        "regolith_rover_description"
-    ) + "/urdf/regolith_rover.urdf.xacro"
-    urdf_xml = xacro.process_file(
-        xacro_path, mappings={"record_video": record_video}
-    ).toxml()
+    xacro_path = (
+        FindPackageShare("regolith_rover_description").find("regolith_rover_description")
+        + "/urdf/regolith_rover.urdf.xacro"
+    )
+    urdf_xml = xacro.process_file(xacro_path, mappings={"record_video": record_video}).toxml()
     rover_urdf_path = output_dir / "rover.urdf"
     rover_urdf_path.write_text(urdf_xml)
 
@@ -265,9 +265,7 @@ def _generate_and_launch(context, *args, **kwargs):
     headless = LaunchConfiguration("headless").perform(context)
     gz_flags = "-r -s" if headless.lower() == "true" else "-r"
     gz_sim = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            [FindPackageShare("ros_gz_sim"), "/launch/gz_sim.launch.py"]
-        ),
+        PythonLaunchDescriptionSource([FindPackageShare("ros_gz_sim"), "/launch/gz_sim.launch.py"]),
         launch_arguments={"gz_args": f"{gz_flags} {world_sdf_path}"}.items(),
     )
 
@@ -389,13 +387,15 @@ def _generate_and_launch(context, *args, **kwargs):
         package="regolith_costmap",
         executable="costmap_node",
         output="screen",
-        parameters=[{
-            "manifest_path": str(manifest_path),
-            "resolution_m": 1.0,
-            "rover_radius_m": 0.3,
-            "slope_lethal_deg": 20.0,
-            "use_sim_time": True,
-        }],
+        parameters=[
+            {
+                "manifest_path": str(manifest_path),
+                "resolution_m": 1.0,
+                "rover_radius_m": 0.3,
+                "slope_lethal_deg": 20.0,
+                "use_sim_time": True,
+            }
+        ],
     )
 
     planner_node = Node(
@@ -436,7 +436,9 @@ def _generate_and_launch(context, *args, **kwargs):
         # The seed makes the route reproducible: the tour is drawn from the costmap, so
         # without it the same terrain would produce a different loop on every launch.
         parameters=[{"use_sim_time": True, "seed": seed}],
-        condition=IfCondition(PythonExpression(["'", LaunchConfiguration("mission"), "' == 'tour'"])),
+        condition=IfCondition(
+            PythonExpression(["'", LaunchConfiguration("mission"), "' == 'tour'"])
+        ),
     )
 
     # Start/goal flags in Gazebo and markers in RViz. Purely a visualisation - it holds
@@ -446,17 +448,20 @@ def _generate_and_launch(context, *args, **kwargs):
         package="regolith_bringup",
         executable="mission_markers_node.py",
         output="screen",
-        parameters=[{
-            "use_sim_time": True,
-            "world_name": WORLD_NAME,
-            "manifest_path": str(manifest_path),
-        }],
+        parameters=[
+            {
+                "use_sim_time": True,
+                "world_name": WORLD_NAME,
+                "manifest_path": str(manifest_path),
+            }
+        ],
         condition=IfCondition(LaunchConfiguration("markers")),
     )
 
-    rviz_config = FindPackageShare("regolith_rover_description").find(
-        "regolith_rover_description"
-    ) + "/rviz/rover.rviz"
+    rviz_config = (
+        FindPackageShare("regolith_rover_description").find("regolith_rover_description")
+        + "/rviz/rover.rviz"
+    )
     rviz = Node(
         package="rviz2",
         executable="rviz2",
@@ -523,51 +528,61 @@ def _generate_and_launch(context, *args, **kwargs):
 def generate_launch_description() -> LaunchDescription:
     return LaunchDescription(
         [
-            DeclareLaunchArgument("seed", default_value="42", description="Terrain generation seed"),
             DeclareLaunchArgument(
-                "mission", default_value="none",
-                description="'tour' runs a scripted 5-waypoint loop automatically; otherwise click goals in RViz"
+                "seed", default_value="42", description="Terrain generation seed"
             ),
             DeclareLaunchArgument(
-                "rviz", default_value="true",
-                description="Launch RViz with the rover config (needed for clicking '2D Goal Pose' goals)"
+                "mission",
+                default_value="none",
+                description="'tour' runs a scripted 5-waypoint loop automatically; otherwise click goals in RViz",
             ),
             DeclareLaunchArgument(
-                "markers", default_value="true",
+                "rviz",
+                default_value="true",
+                description="Launch RViz with the rover config (needed for clicking '2D Goal Pose' goals)",
+            ),
+            DeclareLaunchArgument(
+                "markers",
+                default_value="true",
                 description="Flag the start point and the mission goals in Gazebo and RViz "
-                            "(mission_markers_node.py). Visual only - the flags have no "
-                            "collision and nothing in the control loop reads them"
+                "(mission_markers_node.py). Visual only - the flags have no "
+                "collision and nothing in the control loop reads them",
             ),
             DeclareLaunchArgument(
-                "localization_oracle", default_value="false",
+                "localization_oracle",
+                default_value="false",
                 description="EXPERIMENT ONLY: feed the EKF a simulated absolute position "
-                            "reference from ground truth, standing in for visual odometry. "
-                            "Results obtained with this are not milestone results - see "
-                            "absolute_reference_relay.py"
+                "reference from ground truth, standing in for visual odometry. "
+                "Results obtained with this are not milestone results - see "
+                "absolute_reference_relay.py",
             ),
             DeclareLaunchArgument(
-                "visual_odometry", default_value="false",
+                "visual_odometry",
+                default_value="false",
                 description="RGB-D visual odometry feeding body-frame vy to the EKF. OFF by "
-                            "default because a controlled comparison measured it making "
-                            "localization WORSE on all three acceptance seeds (EKF divergence "
-                            "0.4->1.4, 0.7->24.7 and 6.1->15.2 m, same build, oracle off). It is "
-                            "a real onboard sensor, not an oracle, so its results would be "
-                            "milestone results - they are just bad ones. See PROGRESS.md"
+                "default because a controlled comparison measured it making "
+                "localization WORSE on all three acceptance seeds (EKF divergence "
+                "0.4->1.4, 0.7->24.7 and 6.1->15.2 m, same build, oracle off). It is "
+                "a real onboard sensor, not an oracle, so its results would be "
+                "milestone results - they are just bad ones. See PROGRESS.md",
             ),
             DeclareLaunchArgument(
-                "goal_tolerance_m", default_value="1.0",
+                "goal_tolerance_m",
+                default_value="1.0",
                 description="How close pure pursuit drives to the commanded goal before "
-                            "stopping. Counts against M4's 1.5 m arrival bar directly, so "
-                            "it is a measured setting, not a taste one"
+                "stopping. Counts against M4's 1.5 m arrival bar directly, so "
+                "it is a measured setting, not a taste one",
             ),
             DeclareLaunchArgument(
-                "headless", default_value="false",
-                description="Run Gazebo server-only (-s), no GUI window - for unattended/automated runs"
+                "headless",
+                default_value="false",
+                description="Run Gazebo server-only (-s), no GUI window - for unattended/automated runs",
             ),
             DeclareLaunchArgument(
-                "record_video", default_value="false",
+                "record_video",
+                default_value="false",
                 description="If true, adds gz-sim's CameraVideoRecorder plugin to the onboard "
-                             "camera - see regolith_rover.urdf.xacro for how to start/stop it"
+                "camera - see regolith_rover.urdf.xacro for how to start/stop it",
             ),
             OpaqueFunction(function=_generate_and_launch),
         ]

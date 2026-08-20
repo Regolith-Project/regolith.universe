@@ -38,7 +38,6 @@ elevation source (``regolith_costmap.costmap_node``). It is no longer what gets 
 from pathlib import Path
 
 import numpy as np
-
 from regolith_terrain_gen.config import TerrainConfig
 
 
@@ -64,6 +63,7 @@ def _grid_lookup(xs: np.ndarray, ys: np.ndarray, z: np.ndarray):
     floating rocks before. Shared by the generator (which seats rocks) and by anything
     reading a shipped terrain.obj back, so the two cannot disagree.
     """
+
     def elevation(x_m, y_m):
         x = np.clip(np.asarray(x_m, dtype=float), xs[0], xs[-1])
         y = np.clip(np.asarray(y_m, dtype=float), ys[0], ys[-1])
@@ -90,11 +90,13 @@ def load_drawn_surface(obj_path: Path):
     OBJ is in world metres, so this needs no manifest, no axis convention and no z
     decode; it is the whole reason the ground ships as a mesh.
     """
-    verts = np.array([
-        [float(t) for t in line.split()[1:4]]
-        for line in Path(obj_path).read_text().splitlines()
-        if line.startswith("v ")
-    ])
+    verts = np.array(
+        [
+            [float(t) for t in line.split()[1:4]]
+            for line in Path(obj_path).read_text().splitlines()
+            if line.startswith("v ")
+        ]
+    )
     if not len(verts):
         raise ValueError(f"{obj_path} contains no vertices")
     xs, ys = np.unique(verts[:, 0]), np.unique(verts[:, 1])
@@ -169,9 +171,7 @@ def save_terrain_mesh_obj(
         for x, y, h in zip(xs.ravel(), ys.ravel(), z.ravel())
     ]
     lines += ["vt {:.5f} {:.5f}".format(u, v) for v in uv for u in uv]
-    lines += [
-        "vn {:.4f} {:.4f} {:.4f}".format(*nrm) for nrm in normals.reshape(-1, 3)
-    ]
+    lines += ["vn {:.4f} {:.4f} {:.4f}".format(*nrm) for nrm in normals.reshape(-1, 3)]
 
     # Two triangles per quad, counter-clockwise seen from +z so the lit side faces up.
     r0 = np.arange(rows - 1)[:, None] * cols
@@ -185,9 +185,7 @@ def save_terrain_mesh_obj(
     faces = np.empty((len(a) * 2, 3), dtype=np.int64)
     faces[0::2] = np.stack([a, b, c], axis=1)
     faces[1::2] = np.stack([a, c, d], axis=1)
-    lines += [
-        "f {0}/{0}/{0} {1}/{1}/{1} {2}/{2}/{2}".format(*f) for f in faces
-    ]
+    lines += ["f {0}/{0}/{0} {1}/{1}/{1} {2}/{2}/{2}".format(*f) for f in faces]
 
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines) + "\n")

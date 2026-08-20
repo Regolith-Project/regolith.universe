@@ -89,11 +89,11 @@ PROGRESS.md. One recorded wedge on one seed is the evidence base; that is
 stated as a limit, not dressed up as validation.
 """
 
-import math
 from collections import deque
+import math
 
-import rclpy
 from nav_msgs.msg import Odometry
+import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Imu
 from std_msgs.msg import Bool
@@ -254,7 +254,8 @@ class SlipDetector:
 
         still_disagreeing = (
             f["claimed_rotation_rad"] >= self.min_claimed_rotation_rad * scale
-            and f["observed_rotation_rad"] <= self.release_rotation_ratio * f["claimed_rotation_rad"]
+            and f["observed_rotation_rad"]
+            <= self.release_rotation_ratio * f["claimed_rotation_rad"]
         )
         return not (still_disagreeing or self._body_is_rigid(f))
 
@@ -288,7 +289,7 @@ class WheelSlipNode(Node):
             max_attitude_span_rad=self.get_parameter("max_attitude_span_rad").value,
             max_gyro_rms_rps=self.get_parameter("max_gyro_rms_rps").value,
         )
-        self._imu = None          # (wz, rpy)
+        self._imu = None  # (wz, rpy)
         self._slipping = False
         self._slip_declared_at = None
         self._slip_events = 0
@@ -350,7 +351,9 @@ class WheelSlipNode(Node):
             f = self._detector.features() or {}
             claimed_rotation = f.get("claimed_rotation_rad", 0.0)
             observed_rotation = f.get("observed_rotation_rad", 0.0)
-            ratio = observed_rotation / claimed_rotation if claimed_rotation > 1e-6 else float("nan")
+            ratio = (
+                observed_rotation / claimed_rotation if claimed_rotation > 1e-6 else float("nan")
+            )
             if self._slipping:
                 self._slip_events += 1
                 self.get_logger().warn(

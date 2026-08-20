@@ -21,15 +21,17 @@ rover radius and slope threshold that `hello_moon.launch.py` passes to `costmap_
 and any drift between the two copies would put this straight back where it started.
 """
 
+from geometry_msgs.msg import PoseStamped
+from nav_msgs.msg import OccupancyGrid
+from nav_msgs.msg import Path
 import numpy as np
 import rclpy
-from geometry_msgs.msg import PoseStamped
-from nav_msgs.msg import OccupancyGrid, Path
 from rclpy.node import Node
-from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
-from std_msgs.msg import Bool
-
+from rclpy.qos import DurabilityPolicy
+from rclpy.qos import QoSProfile
+from rclpy.qos import ReliabilityPolicy
 from regolith_planner.tour import plan_tour
+from std_msgs.msg import Bool
 
 WAYPOINT_TIMEOUT_S = 90.0
 START_DELAY_S = 10.0

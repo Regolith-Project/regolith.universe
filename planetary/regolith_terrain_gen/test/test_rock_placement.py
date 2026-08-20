@@ -20,7 +20,6 @@ OBJ files that actually ship.
 
 import numpy as np
 import pytest
-
 from regolith_terrain_gen.config import TerrainConfig
 from regolith_terrain_gen.generate import generate_world
 from regolith_terrain_gen.rocks import generate_rock_variants
@@ -42,7 +41,9 @@ def test_rock_collision_is_not_a_mesh(tmp_path):
     # Isolate the <collision> blocks and assert none of them contains a <mesh>.
     collision_blocks = [blk.split("</collision>")[0] for blk in text.split("<collision")[1:]]
     meshed = [b for b in collision_blocks if "<mesh>" in b]
-    assert not meshed, f"{len(meshed)} collision element(s) still use non-functioning <mesh> geometry"
+    assert (
+        not meshed
+    ), f"{len(meshed)} collision element(s) still use non-functioning <mesh> geometry"
 
     # Exactly one working collision proxy per rock...
     assert text.count("<ellipsoid>") == rock_count
@@ -61,7 +62,9 @@ def test_collision_ellipsoid_stays_inside_the_visible_rock(tmp_path, seed):
     would stop against thin air."""
     cfg = TerrainConfig(seed=seed)
     rng = np.random.default_rng(cfg.seed)
-    variants = generate_rock_variants(tmp_path / "rocks", cfg.rock_variant_count, rng, cfg.rock_subdivisions)
+    variants = generate_rock_variants(
+        tmp_path / "rocks", cfg.rock_variant_count, rng, cfg.rock_subdivisions
+    )
     for variant in variants:
         radii = variant.collision_radii
         assert (radii > 0).all()

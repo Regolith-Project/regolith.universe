@@ -33,8 +33,9 @@ scale uncertainty and at a low rate, so an oracle pretending to millimetre
 precision would answer a question nobody is asking.
 """
 
+from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import PoseWithCovarianceStamped
 import rclpy
-from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped
 from rclpy.node import Node
 
 # 0.25 m^2 -> 0.5 m standard deviation on x and y. Chosen to be comparable to
@@ -51,9 +52,7 @@ class AbsoluteReferenceRelay(Node):
         self._divisor = max(1, int(self.get_parameter("publish_rate_divisor").value))
         self._count = 0
 
-        self._pub = self.create_publisher(
-            PoseWithCovarianceStamped, "/absolute_reference/pose", 10
-        )
+        self._pub = self.create_publisher(PoseWithCovarianceStamped, "/absolute_reference/pose", 10)
         self.create_subscription(PoseStamped, "/ground_truth/pose", self._on_pose, 10)
         self.get_logger().warn(
             "SIMULATED ABSOLUTE REFERENCE IS ACTIVE - the EKF is being fed ground-truth "
@@ -72,12 +71,12 @@ class AbsoluteReferenceRelay(Node):
         out.header.frame_id = "odom"  # the frame the EKF estimates in
         out.pose.pose = msg.pose
         covariance = [0.0] * 36
-        covariance[0] = POSITION_VARIANCE       # x
-        covariance[7] = POSITION_VARIANCE       # y
-        covariance[14] = POSITION_VARIANCE      # z
-        covariance[21] = ORIENTATION_VARIANCE   # roll
-        covariance[28] = ORIENTATION_VARIANCE   # pitch
-        covariance[35] = ORIENTATION_VARIANCE   # yaw
+        covariance[0] = POSITION_VARIANCE  # x
+        covariance[7] = POSITION_VARIANCE  # y
+        covariance[14] = POSITION_VARIANCE  # z
+        covariance[21] = ORIENTATION_VARIANCE  # roll
+        covariance[28] = ORIENTATION_VARIANCE  # pitch
+        covariance[35] = ORIENTATION_VARIANCE  # yaw
         out.pose.covariance = covariance
         self._pub.publish(out)
 

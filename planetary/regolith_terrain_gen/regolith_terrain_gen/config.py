@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """Tunable parameters for procedural lunar terrain generation."""
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from dataclasses import field
 
 
 @dataclass

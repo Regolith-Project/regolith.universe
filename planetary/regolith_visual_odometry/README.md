@@ -14,10 +14,10 @@ The rover was arriving exactly where it believed the goal was.
 About **10% of this rover's motion over boulder-strewn regolith is lateral
 slide**, and nothing in the previous sensor suite could see it:
 
-| sensor | observes | cannot observe |
-|---|---|---|
-| wheel odometry | `vx`, `vyaw` | `vy` - a differential-drive model assumes it is zero *by construction* |
-| IMU | orientation, angular rate | position error of any kind |
+| sensor         | observes                  | cannot observe                                                         |
+| -------------- | ------------------------- | ---------------------------------------------------------------------- |
+| wheel odometry | `vx`, `vyaw`              | `vy` - a differential-drive model assumes it is zero _by construction_ |
+| IMU            | orientation, angular rate | position error of any kind                                             |
 
 So the lateral error accumulated as a random walk that nothing ever corrected.
 Feeding the same build an absolute position reference (0.5 m, 1 Hz) turned 0/3
@@ -26,10 +26,10 @@ the gap. This package is the real sensor that fills it.
 
 ## What it does and does not promise
 
-Visual odometry is a **relative** sensor. It is *not* the oracle that produced
+Visual odometry is a **relative** sensor. It is _not_ the oracle that produced
 that 3/3: the oracle handed the filter absolute position and drove EKF
-divergence to 0.00 m, which nothing onboard can do. VO makes the drift *grow
-more slowly* by observing the term that was structurally invisible. Published
+divergence to 0.00 m, which nothing onboard can do. VO makes the drift _grow
+more slowly_ by observing the term that was structurally invisible. Published
 planetary-rover VO runs on the order of 1-2% of distance travelled; over this
 acceptance's ~110 m traverses that is 1-2 m against a 1.5 m bar. Close, not
 comfortable - and the real number is whatever the acceptance run measures.
@@ -59,10 +59,10 @@ Estimating between adjacent frames is worse than useless here. At 0.2 m/s a
 measured **0.74 px** of feature-tracker noise. Signal and noise are the same
 size:
 
-| baseline | 0.1 s | 0.2 s | 0.3 s | 0.5 s | 0.8 s |
-|---|---|---|---|---|---|
-| median flow | 1.05 px | 2.41 px | 2.93 px | 5.74 px | 10.15 px |
-| recovered speed (true 0.200 m/s) | 0.056 | 0.200 | 0.192 | 0.224 | 0.201 |
+| baseline                         | 0.1 s   | 0.2 s   | 0.3 s   | 0.5 s   | 0.8 s    |
+| -------------------------------- | ------- | ------- | ------- | ------- | -------- |
+| median flow                      | 1.05 px | 2.41 px | 2.93 px | 5.74 px | 10.15 px |
+| recovered speed (true 0.200 m/s) | 0.056   | 0.200   | 0.192   | 0.224   | 0.201    |
 
 So the node holds a **keyframe** and estimates only once ~0.4 s of motion has
 accumulated: ~2.5 updates/s at a worst-case error of 0.051 m/s. That is ample -
@@ -74,11 +74,11 @@ this corrects a drift that grows over minutes, not a control loop.
 `/ground_truth/pose` offline (the estimator never sees it), plus a live
 confirmation in the running sim:
 
-| | offline, 130 pairs | live, 90 pairs |
-|---|---|---|
+|                                    | offline, 130 pairs     | live, 90 pairs         |
+| ---------------------------------- | ---------------------- | ---------------------- |
 | **`vy` error** (the fused channel) | **+0.000 ± 0.018 m/s** | **+0.001 ± 0.020 m/s** |
-| `vx` error (published, not fused) | −0.060 ± 0.053 m/s | −0.067 ± 0.050 m/s |
-| frame pairs usable | 71% | 63% |
+| `vx` error (published, not fused)  | −0.060 ± 0.053 m/s     | −0.067 ± 0.050 m/s     |
+| frame pairs usable                 | 71%                    | 63%                    |
 
 The reported sigma (0.020) matches `vy`'s measured spread almost exactly, so the
 filter is being told the truth about how much to trust it.
@@ -86,11 +86,11 @@ filter is being told the truth about how much to trust it.
 **`vx` is biased low and is therefore not fused.** How low depends on what the
 rover is doing, which is worth stating rather than collapsing to one number:
 
-| condition | `vx` bias | `vy` bias |
-|---|---|---|
-| straight-line driving (n=92) | −0.069 m/s (−35%) | +0.003 ± 0.016 |
-| turning (n=38) | −0.036 m/s (−18%) | −0.005 ± 0.022 |
-| one live cruise sample (n=51) | −0.017 m/s (−9%) | - |
+| condition                     | `vx` bias         | `vy` bias      |
+| ----------------------------- | ----------------- | -------------- |
+| straight-line driving (n=92)  | −0.069 m/s (−35%) | +0.003 ± 0.016 |
+| turning (n=38)                | −0.036 m/s (−18%) | −0.005 ± 0.022 |
+| one live cruise sample (n=51) | −0.017 m/s (−9%)  | -              |
 
 Wheel odometry measures forward distance to about 1% once slip is gated, so
 fusing this would inject a systematic error into the one term the existing
@@ -100,7 +100,7 @@ than it has drives past its goal.
 The asymmetry is the interesting part: `vy` is unbiased under exactly the same
 conditions that bias `vx`. The leading explanation - consistent with the data
 but not separately proven - is Lucas-Kanade's translation-only motion model.
-Driving forward over near ground makes texture *expand* rapidly between frames,
+Driving forward over near ground makes texture _expand_ rapidly between frames,
 and a fixed-window tracker with no affine term systematically under-tracks
 expansion; sliding sideways produces no scale change at all, so it does not.
 That would also explain why the bias is worst in straight-line driving and why
@@ -128,14 +128,14 @@ invisible in synthetic testing:
 
 Against ray-traced scenes with an exact known answer (12 seeds, `test/`):
 
-| | true | recovered (mean) | sd of one estimate |
-|---|---|---|---|
-| forward | 0.200 m/s | 0.191 | 0.017 |
-| lateral, no slip | 0.000 m/s | −0.002 | 0.011 |
-| lateral, 10% slip | 0.020 m/s | 0.020 | 0.026 |
+|                   | true      | recovered (mean) | sd of one estimate |
+| ----------------- | --------- | ---------------- | ------------------ |
+| forward           | 0.200 m/s | 0.191            | 0.017              |
+| lateral, no slip  | 0.000 m/s | −0.002           | 0.011              |
+| lateral, 10% slip | 0.020 m/s | 0.020            | 0.026              |
 
 **A single estimate cannot resolve one interval's slip** (0.020 m/s signal
-against 0.026 m/s noise). It works because the noise is *unbiased* and the EKF
+against 0.026 m/s noise). It works because the noise is _unbiased_ and the EKF
 integrates thousands of them. The test asserts that averaged slip and no-slip
 are distinguishable, rather than making a single-shot assertion loose enough to
 pass on a dead channel.
@@ -145,7 +145,7 @@ pass on a dead channel.
 Same rule as `wheel_slip_node.py`: this is a localisation input, and an
 acceptance number produced by a localisation input that consulted
 `/ground_truth/pose` would be meaningless. Its inputs are the two cameras and
-nothing else. Contrast `absolute_reference_relay.py`, which *is* an oracle,
+nothing else. Contrast `absolute_reference_relay.py`, which _is_ an oracle,
 announces itself at four layers, and is default-off.
 
 ## Running it
@@ -163,7 +163,7 @@ ros2 launch regolith_bringup hello_moon.launch.py seed:=42 visual_odometry:=fals
 cd planetary/regolith_visual_odometry && PYTHONPATH=. python3 -m pytest test -q
 ```
 
-They ray-trace a textured, *rough* ground surface from two poses a known rigid
+They ray-trace a textured, _rough_ ground surface from two poses a known rigid
 motion apart, so the expected answer is exact and no simulator is involved. The
 relief matters: a perfectly flat plane makes every landmark coplanar, which is a
 degenerate configuration for PnP - on a flat plane this estimator reports

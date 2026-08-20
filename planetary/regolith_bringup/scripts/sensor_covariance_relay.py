@@ -15,9 +15,9 @@ field this needs, this relay just fills in small, fixed diagonal covariances
 directly.
 """
 
+from nav_msgs.msg import Odometry
 import rclpy
 from rclpy.node import Node
-from nav_msgs.msg import Odometry
 from sensor_msgs.msg import Imu
 
 ORIENTATION_VARIANCE = 0.01

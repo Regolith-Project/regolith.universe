@@ -13,9 +13,14 @@ import heapq
 import numpy as np
 
 _NEIGHBORS = [
-    (-1, -1, np.sqrt(2)), (-1, 0, 1.0), (-1, 1, np.sqrt(2)),
-    (0, -1, 1.0), (0, 1, 1.0),
-    (1, -1, np.sqrt(2)), (1, 0, 1.0), (1, 1, np.sqrt(2)),
+    (-1, -1, np.sqrt(2)),
+    (-1, 0, 1.0),
+    (-1, 1, np.sqrt(2)),
+    (0, -1, 1.0),
+    (0, 1, 1.0),
+    (1, -1, np.sqrt(2)),
+    (1, 0, 1.0),
+    (1, 1, np.sqrt(2)),
 ]
 
 LETHAL_COST = 100
@@ -67,7 +72,9 @@ def plan_path(cost_grid: np.ndarray, start_rc: tuple, goal_rc: tuple) -> list:
             if tentative_g < best_cost.get(neighbor, float("inf")):
                 best_cost[neighbor] = tentative_g
                 came_from[neighbor] = current
-                heapq.heappush(open_heap, (tentative_g + heuristic(neighbor), tentative_g, neighbor))
+                heapq.heappush(
+                    open_heap, (tentative_g + heuristic(neighbor), tentative_g, neighbor)
+                )
 
     if goal_rc not in came_from and start_rc != goal_rc:
         return []

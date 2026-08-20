@@ -38,7 +38,6 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-
 from regolith_terrain_gen.config import TerrainConfig
 from regolith_terrain_gen.generate import generate_world
 
@@ -56,11 +55,13 @@ def _drawn_surface(world_dir: Path):
     world coordinates and the grid is recovered from them, so a wrong axis, a wrong
     scale or a dropped row surfaces here instead of being reproduced.
     """
-    verts = np.array([
-        [float(t) for t in line.split()[1:4]]
-        for line in (world_dir / "terrain.obj").read_text().splitlines()
-        if line.startswith("v ")
-    ])
+    verts = np.array(
+        [
+            [float(t) for t in line.split()[1:4]]
+            for line in (world_dir / "terrain.obj").read_text().splitlines()
+            if line.startswith("v ")
+        ]
+    )
     assert len(verts), "terrain.obj has no vertices"
 
     xs = np.unique(verts[:, 0])
@@ -160,7 +161,9 @@ def test_rocks_are_bedded_in_but_not_swallowed(tmp_path, seed):
 
     embed = -gaps
     assert (embed > -MAX_FLOAT_M).all()
-    assert (embed < 0.68 * scales).all(), (
+    assert (
+        embed < 0.68 * scales
+    ).all(), (
         f"seed {seed}: deepest embed {embed.max():.2f} m on a {scales[embed.argmax()]:.2f} m rock"
     )
 

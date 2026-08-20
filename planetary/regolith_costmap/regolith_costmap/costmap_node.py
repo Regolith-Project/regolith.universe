@@ -11,13 +11,14 @@ import json
 import math
 from pathlib import Path
 
-import numpy as np
-import rclpy
+from PIL import Image
 from geometry_msgs.msg import PointStamped
 from nav_msgs.msg import OccupancyGrid
-from PIL import Image
+import numpy as np
+import rclpy
 from rclpy.node import Node
-from rclpy.qos import QoSDurabilityPolicy, QoSProfile
+from rclpy.qos import QoSDurabilityPolicy
+from rclpy.qos import QoSProfile
 from scipy import ndimage
 
 
@@ -129,7 +130,9 @@ def build_costmap(
     # so one cell already covers it with room to spare.
     inflation_cells = max(1, math.ceil(rover_radius_m / actual_resolution_m))
     structure = ndimage.generate_binary_structure(2, 2)
-    lethal_inflated = ndimage.binary_dilation(lethal, structure=structure, iterations=inflation_cells)
+    lethal_inflated = ndimage.binary_dilation(
+        lethal, structure=structure, iterations=inflation_cells
+    )
 
     # Non-lethal cost: normalized blend of slope and roughness, scaled to [0, 99].
     slope_cost = np.clip(slope_deg / slope_lethal_deg, 0.0, 1.0)
@@ -195,8 +198,8 @@ class CostmapNode(Node):
             self.get_parameter("rover_radius_m").value,
             self.get_parameter("slope_lethal_deg").value,
         )
-        self._base_grid = cost_grid            # a-priori map, never overwritten
-        self._grid = cost_grid.copy()          # base + learned hazards
+        self._base_grid = cost_grid  # a-priori map, never overwritten
+        self._grid = cost_grid.copy()  # base + learned hazards
         self._resolution_m = resolution_m
         self._origin = (origin_x, origin_y)
         self._hazards = []
@@ -247,7 +250,9 @@ class CostmapNode(Node):
             "radius). The rover got wedged here; the planner will route around it from now on."
         )
 
-    def _to_occupancy_grid(self, cost_grid: np.ndarray, resolution_m: float, origin_x: float, origin_y: float):
+    def _to_occupancy_grid(
+        self, cost_grid: np.ndarray, resolution_m: float, origin_x: float, origin_y: float
+    ):
         msg = OccupancyGrid()
         msg.header.frame_id = "odom"
         msg.info.resolution = float(resolution_m)

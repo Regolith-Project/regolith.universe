@@ -17,11 +17,11 @@ See PROGRESS.md "costmap decodes the wrong height span".
 
 import json
 
+from PIL import Image
 import numpy as np
 import pytest
-from PIL import Image
-
-from regolith_costmap.costmap_node import build_costmap, load_heightmap
+from regolith_costmap.costmap_node import build_costmap
+from regolith_costmap.costmap_node import load_heightmap
 
 WORLD_SIZE_M = 200.0
 HEIGHT_RANGE_M = 10.0
@@ -91,7 +91,9 @@ def test_slopes_are_not_overstated_across_the_lethal_threshold(tmp_path):
     threshold_deg = (true_slope_deg + stretched_slope_deg) / 2.0
 
     correct, _, _, _ = build_costmap(manifest, load_heightmap(manifest), 1.0, 0.3, threshold_deg)
-    stretched, _, _, _ = build_costmap(manifest, surface / 8.0 * HEIGHT_RANGE_M, 1.0, 0.3, threshold_deg)
+    stretched, _, _, _ = build_costmap(
+        manifest, surface / 8.0 * HEIGHT_RANGE_M, 1.0, 0.3, threshold_deg
+    )
 
     assert not (correct >= 100).any()
     assert (stretched >= 100).all()

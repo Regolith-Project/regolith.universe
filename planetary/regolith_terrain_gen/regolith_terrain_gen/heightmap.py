@@ -4,11 +4,11 @@
 
 from pathlib import Path
 
-import numpy as np
 from PIL import Image
-
+import numpy as np
 from regolith_terrain_gen.config import TerrainConfig
-from regolith_terrain_gen.craters import apply_craters, place_craters
+from regolith_terrain_gen.craters import apply_craters
+from regolith_terrain_gen.craters import place_craters
 from regolith_terrain_gen.noise import fbm
 from regolith_terrain_gen.terrain_mesh import mesh_surface_lookup
 
@@ -58,7 +58,9 @@ def build_heightmap(cfg: TerrainConfig, rng: np.random.Generator) -> tuple:
     half_world = cfg.world_size_m / 2.0
     lin = np.linspace(-half_world, half_world, n)
     gx, gy = np.meshgrid(lin, lin)
-    heightmap += (gx * np.cos(slope_dir) + gy * np.sin(slope_dir)) / cfg.world_size_m * rise_over_world
+    heightmap += (
+        (gx * np.cos(slope_dir) + gy * np.sin(slope_dir)) / cfg.world_size_m * rise_over_world
+    )
 
     craters = place_craters(cfg, rng)
     apply_craters(heightmap, cfg, craters, px_per_m)
@@ -224,7 +226,9 @@ def _build_smoothed_surface(heightmap: np.ndarray, cfg: TerrainConfig) -> dict:
     }
 
 
-def _synthesize_visual_heightmap(heightmap: np.ndarray, cfg: TerrainConfig, grid: dict) -> np.ndarray:
+def _synthesize_visual_heightmap(
+    heightmap: np.ndarray, cfg: TerrainConfig, grid: dict
+) -> np.ndarray:
     """Evaluate the SAME tilted collision plane build_terrain_collision_boxes_sdf turns
     into physics boxes, at every full-resolution heightmap pixel - so the rendered
     <heightmap> visual is, cell by cell, the exact surface the rover physically stands
@@ -352,7 +356,9 @@ def build_terrain_collision_boxes_sdf(heightmap: np.ndarray, cfg: TerrainConfig)
     cell_size_m, xs, ys = grid["cell_size_m"], grid["xs"], grid["ys"]
     surface, grad_x, grad_y = grid["surface"], grid["grad_x"], grid["grad_y"]
 
-    slab_size_m = cell_size_m * (1.0 + cfg.collision_overlap_frac)  # widen so neighbours overlap (no cracks)
+    slab_size_m = cell_size_m * (
+        1.0 + cfg.collision_overlap_frac
+    )  # widen so neighbours overlap (no cracks)
     collisions = []
     for row in range(rows_blocks):
         for col in range(cols_blocks):

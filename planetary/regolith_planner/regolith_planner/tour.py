@@ -36,8 +36,8 @@ import math
 import random
 
 import numpy as np
-
-from regolith_planner.astar import LETHAL_COST, plan_path
+from regolith_planner.astar import LETHAL_COST
+from regolith_planner.astar import plan_path
 
 LEG_COUNT = 5  # goals published, the last of which is the return to spawn
 LEG_MIN_M = 10.0
@@ -72,7 +72,7 @@ def _neighbourhood_clear(cost_grid: np.ndarray, rc: tuple) -> bool:
     r, c = rc
     if not (0 <= r < rows and 0 <= c < cols):
         return False
-    block = cost_grid[max(0, r - 1):r + 2, max(0, c - 1):c + 2]
+    block = cost_grid[max(0, r - 1) : r + 2, max(0, c - 1) : c + 2]
     return not bool((block >= LETHAL_COST).any())
 
 
@@ -171,13 +171,24 @@ def plan_tour(
             # otherwise these repeat the two attempts above draw for draw.
             relaxations += [
                 (True, False, "leaves the rover more than one leg from home"),
-                (False, False,
-                 "crosses open ground and leaves the rover more than one leg from home"),
+                (
+                    False,
+                    False,
+                    "crosses open ground and leaves the rover more than one leg from home",
+                ),
             ]
         for require_blocked, homeward, note in relaxations:
             chosen = _draw_waypoint(
-                cost_grid, rng, last, waypoints, spawn_xy, cell,
-                leg_min_m, leg_max_m, require_blocked, homeward,
+                cost_grid,
+                rng,
+                last,
+                waypoints,
+                spawn_xy,
+                cell,
+                leg_min_m,
+                leg_max_m,
+                require_blocked,
+                homeward,
             )
             if chosen is not None:
                 if note:
@@ -211,8 +222,16 @@ def plan_tour(
 
 
 def _draw_waypoint(
-    cost_grid, rng, last, chosen_so_far, spawn_xy, cell,
-    leg_min_m, leg_max_m, require_blocked, homeward,
+    cost_grid,
+    rng,
+    last,
+    chosen_so_far,
+    spawn_xy,
+    cell,
+    leg_min_m,
+    leg_max_m,
+    require_blocked,
+    homeward,
 ):
     """One waypoint, by rejection sampling. Cheap tests first, A* only on survivors -
     A* over the whole grid is far too expensive to run on every draw.

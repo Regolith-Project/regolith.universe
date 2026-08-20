@@ -6,7 +6,6 @@ from dataclasses import dataclass
 from typing import Callable
 
 import numpy as np
-
 from regolith_terrain_gen.config import TerrainConfig
 from regolith_terrain_gen.rocks import RockVariant
 

@@ -5,14 +5,16 @@
 from pathlib import Path
 
 import numpy as np
-
 from regolith_terrain_gen.config import TerrainConfig
-from regolith_terrain_gen.heightmap import build_heightmap, build_terrain_collision_boxes_sdf, save_heightmap_png
+from regolith_terrain_gen.heightmap import build_heightmap
+from regolith_terrain_gen.heightmap import build_terrain_collision_boxes_sdf
+from regolith_terrain_gen.heightmap import save_heightmap_png
 from regolith_terrain_gen.rocks import generate_rock_variants
 from regolith_terrain_gen.scatter import scatter_rocks
 from regolith_terrain_gen.terrain_mesh import save_terrain_mesh_obj
 from regolith_terrain_gen.textures import generate_textures
-from regolith_terrain_gen.worldgen import build_world_sdf, write_manifest
+from regolith_terrain_gen.worldgen import build_world_sdf
+from regolith_terrain_gen.worldgen import write_manifest
 
 
 def generate_world(cfg: TerrainConfig, output_dir: Path, start_paused: bool = True) -> Path:
@@ -39,13 +41,19 @@ def generate_world(cfg: TerrainConfig, output_dir: Path, start_paused: bool = Tr
     )
 
     rock_mesh_dir = output_dir / "rocks"
-    rock_variants = generate_rock_variants(rock_mesh_dir, cfg.rock_variant_count, rng, cfg.rock_subdivisions)
+    rock_variants = generate_rock_variants(
+        rock_mesh_dir, cfg.rock_variant_count, rng, cfg.rock_subdivisions
+    )
     rocks = scatter_rocks(cfg, rng, rock_variants, elevation_lookup)
 
     world_sdf_path = output_dir / "world.sdf"
     world_sdf_path.write_text(
         build_world_sdf(
-            cfg, texture_pngs, rocks, rock_mesh_dir, terrain_collision_sdf,
+            cfg,
+            texture_pngs,
+            rocks,
+            rock_mesh_dir,
+            terrain_collision_sdf,
             terrain_mesh_obj,
             # Lets the opening GUI camera be placed relative to the real ground height
             # under it, instead of at a hardcoded absolute z that assumes one seed's
@@ -57,12 +65,19 @@ def generate_world(cfg: TerrainConfig, output_dir: Path, start_paused: bool = Tr
 
     spawn_elevation_m = elevation_lookup(*cfg.spawn_zone_center)
     write_manifest(
-        output_dir / "manifest.json", cfg, craters, rocks, heightmap_png, world_sdf_path,
+        output_dir / "manifest.json",
+        cfg,
+        craters,
+        rocks,
+        heightmap_png,
+        world_sdf_path,
         spawn_elevation_m,
         # Same (min, span) the world SDF decodes with, so the costmap reads the PNG back
         # at the elevations gz renders and the collision boxes use.
-        heightmap_z_min_m=heightmap_z_min, heightmap_z_span_m=heightmap_z_span,
-        terrain_mesh_obj=terrain_mesh_obj, terrain_mesh_stats=terrain_mesh_stats,
+        heightmap_z_min_m=heightmap_z_min,
+        heightmap_z_span_m=heightmap_z_span,
+        terrain_mesh_obj=terrain_mesh_obj,
+        terrain_mesh_stats=terrain_mesh_stats,
     )
 
     return world_sdf_path

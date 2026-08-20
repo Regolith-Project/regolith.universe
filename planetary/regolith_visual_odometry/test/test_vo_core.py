@@ -17,9 +17,12 @@ large vx could hide inside.
 
 import numpy as np
 import pytest
-
-from regolith_visual_odometry.vo_core import (OPTICAL_TO_BODY, VoConfig, detect_features,
-                                              estimate_motion, sample_depth, usable_depth_mask)
+from regolith_visual_odometry.vo_core import OPTICAL_TO_BODY
+from regolith_visual_odometry.vo_core import VoConfig
+from regolith_visual_odometry.vo_core import detect_features
+from regolith_visual_odometry.vo_core import estimate_motion
+from regolith_visual_odometry.vo_core import sample_depth
+from regolith_visual_odometry.vo_core import usable_depth_mask
 
 WIDTH, HEIGHT = 640, 480
 HFOV_RAD = 1.4
@@ -139,8 +142,14 @@ def _estimate(velocity_mps, yaw_rate_rps=0.0, seed=0, cfg=None):
     prev_gray, prev_depth = _render(np.zeros(3), 0.0, k_matrix, texture, relief)
     cur_gray, _ = _render(delta_position_m, delta_yaw_rad, k_matrix, texture, relief)
     return estimate_motion(
-        prev_gray, prev_depth, cur_gray, k_matrix, DT_S,
-        _rot_y(CAMERA_PITCH_RAD), CAMERA_OFFSET_M, cfg or VoConfig(),
+        prev_gray,
+        prev_depth,
+        cur_gray,
+        k_matrix,
+        DT_S,
+        _rot_y(CAMERA_PITCH_RAD),
+        CAMERA_OFFSET_M,
+        cfg or VoConfig(),
     )
 
 
@@ -256,8 +265,14 @@ def test_featureless_scene_is_refused_not_guessed():
     depth = np.full((HEIGHT, WIDTH), 3.0, np.float32)
 
     estimate = estimate_motion(
-        flat_gray, depth, flat_gray, k_matrix, DT_S,
-        _rot_y(CAMERA_PITCH_RAD), CAMERA_OFFSET_M, VoConfig(),
+        flat_gray,
+        depth,
+        flat_gray,
+        k_matrix,
+        DT_S,
+        _rot_y(CAMERA_PITCH_RAD),
+        CAMERA_OFFSET_M,
+        VoConfig(),
     )
 
     assert not estimate.valid
@@ -279,8 +294,14 @@ def test_missing_depth_is_refused():
     no_depth = np.full((HEIGHT, WIDTH), np.inf, np.float32)
 
     estimate = estimate_motion(
-        gray, no_depth, gray, k_matrix, DT_S,
-        _rot_y(CAMERA_PITCH_RAD), CAMERA_OFFSET_M, VoConfig(),
+        gray,
+        no_depth,
+        gray,
+        k_matrix,
+        DT_S,
+        _rot_y(CAMERA_PITCH_RAD),
+        CAMERA_OFFSET_M,
+        VoConfig(),
     )
 
     assert not estimate.valid
@@ -328,15 +349,21 @@ def test_a_zero_interval_is_not_a_measurement():
     gray, depth = _render(np.zeros(3), 0.0, k_matrix, texture, relief)
 
     estimate = estimate_motion(
-        gray, depth, gray, k_matrix, 0.0,
-        _rot_y(CAMERA_PITCH_RAD), CAMERA_OFFSET_M, VoConfig(),
+        gray,
+        depth,
+        gray,
+        k_matrix,
+        0.0,
+        _rot_y(CAMERA_PITCH_RAD),
+        CAMERA_OFFSET_M,
+        VoConfig(),
     )
 
     assert not estimate.valid
 
 
 def test_a_frame_with_no_range_anywhere_says_so_specifically():
-    """"No depth here" and "no texture here" are different problems.
+    """ "No depth here" and "no texture here" are different problems.
 
     They used to produce the same message, and that cost real time: an M4
     acceptance seed refused 2759 consecutive frame pairs for "too few tracked
@@ -351,8 +378,14 @@ def test_a_frame_with_no_range_anywhere_says_so_specifically():
     everything_too_close = np.full((HEIGHT, WIDTH), 0.02, np.float32)
 
     estimate = estimate_motion(
-        gray, everything_too_close, gray, k_matrix, DT_S,
-        _rot_y(CAMERA_PITCH_RAD), CAMERA_OFFSET_M, VoConfig(),
+        gray,
+        everything_too_close,
+        gray,
+        k_matrix,
+        DT_S,
+        _rot_y(CAMERA_PITCH_RAD),
+        CAMERA_OFFSET_M,
+        VoConfig(),
     )
 
     assert not estimate.valid
@@ -376,12 +409,24 @@ def test_a_physically_impossible_speed_is_refused():
     cur_gray, _ = _render(np.array([0.08, 0.0, 0.0]), 0.0, k_matrix, texture, relief)
 
     plausible = estimate_motion(
-        prev_gray, prev_depth, cur_gray, k_matrix, 0.4,
-        _rot_y(CAMERA_PITCH_RAD), CAMERA_OFFSET_M, VoConfig(),
+        prev_gray,
+        prev_depth,
+        cur_gray,
+        k_matrix,
+        0.4,
+        _rot_y(CAMERA_PITCH_RAD),
+        CAMERA_OFFSET_M,
+        VoConfig(),
     )
     absurd = estimate_motion(
-        prev_gray, prev_depth, cur_gray, k_matrix, 0.004,
-        _rot_y(CAMERA_PITCH_RAD), CAMERA_OFFSET_M, VoConfig(),
+        prev_gray,
+        prev_depth,
+        cur_gray,
+        k_matrix,
+        0.004,
+        _rot_y(CAMERA_PITCH_RAD),
+        CAMERA_OFFSET_M,
+        VoConfig(),
     )
 
     assert plausible.valid, plausible.reason

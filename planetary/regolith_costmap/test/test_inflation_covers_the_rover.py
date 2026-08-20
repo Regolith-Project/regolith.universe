@@ -23,7 +23,6 @@ import math
 
 import numpy as np
 import pytest
-
 from regolith_costmap.costmap_node import build_costmap
 
 # regolith_rover_description: 0.46 m wheel separation + 0.06 m wheel width = 0.52 m

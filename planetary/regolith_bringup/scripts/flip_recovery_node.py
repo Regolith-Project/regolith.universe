@@ -66,14 +66,16 @@ maneuver actually moved the rover, so "recovery fired" is never again mistaken
 for "recovery worked".
 """
 
+from collections import deque
 import math
 import subprocess
 import time
-from collections import deque
 
-import rclpy
-from geometry_msgs.msg import PointStamped, PoseStamped, Twist
+from geometry_msgs.msg import PointStamped
+from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
+import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Bool
 
@@ -92,29 +94,41 @@ class FlipRecoveryNode(Node):
         self.declare_parameter("model_name", "rover")
         self.declare_parameter("flip_threshold_deg", 60.0)
         self.declare_parameter("safe_threshold_deg", 25.0)
-        self.declare_parameter("debounce_s", 1.0)   # sustained flip before acting
-        self.declare_parameter("backoff_s", 2.0)    # base "how far back (in sim time)" the reset pose is
+        self.declare_parameter("debounce_s", 1.0)  # sustained flip before acting
+        self.declare_parameter(
+            "backoff_s", 2.0
+        )  # base "how far back (in sim time)" the reset pose is
         self.declare_parameter("max_backoff_s", 40.0)  # cap on progressive backoff
-        self.declare_parameter("cooldown_s", 5.0)   # re-arm delay after a reset
-        self.declare_parameter("relapse_window_s", 20.0)  # re-flip within this of a reset => "stuck", back off further
+        self.declare_parameter("cooldown_s", 5.0)  # re-arm delay after a reset
+        self.declare_parameter(
+            "relapse_window_s", 20.0
+        )  # re-flip within this of a reset => "stuck", back off further
         self.declare_parameter("clearance_m", 0.3)  # z lift above recorded ground height
         self.declare_parameter("check_period_s", 0.2)
 
         # Stuck (wheels-locked-but-upright) detection: see module docstring.
-        self.declare_parameter("stuck_min_speed_mps", 0.02)      # GT speed below this counts as "not moving"
-        self.declare_parameter("stuck_min_commanded_mps", 0.03)  # /cmd_vel magnitude above this counts as "trying to move"
-        self.declare_parameter("stuck_debounce_s", 3.0)          # sustained mismatch before acting
-        self.declare_parameter("stuck_nudge_rate_hz", 30.0)      # publish rate during the override (must beat pure_pursuit's 10 Hz)
-        self.declare_parameter("stuck_cooldown_s", 5.0)          # re-arm delay after a stuck recovery
+        self.declare_parameter(
+            "stuck_min_speed_mps", 0.02
+        )  # GT speed below this counts as "not moving"
+        self.declare_parameter(
+            "stuck_min_commanded_mps", 0.03
+        )  # /cmd_vel magnitude above this counts as "trying to move"
+        self.declare_parameter("stuck_debounce_s", 3.0)  # sustained mismatch before acting
+        self.declare_parameter(
+            "stuck_nudge_rate_hz", 30.0
+        )  # publish rate during the override (must beat pure_pursuit's 10 Hz)
+        self.declare_parameter("stuck_cooldown_s", 5.0)  # re-arm delay after a stuck recovery
         # Escape maneuver, escalating over consecutive events - see _recover_stuck.
         self.declare_parameter("escape_reverse_speed_mps", 0.2)
-        self.declare_parameter("escape_reverse_s", 3.0)          # base; doubles per consecutive event
+        self.declare_parameter("escape_reverse_s", 3.0)  # base; doubles per consecutive event
         self.declare_parameter("escape_turn_rate_rps", 0.5)
-        self.declare_parameter("escape_turn_s", 2.0)             # base; +1.5 s per consecutive event
+        self.declare_parameter("escape_turn_s", 2.0)  # base; +1.5 s per consecutive event
         self.declare_parameter("escape_max_reverse_s", 10.0)
         self.declare_parameter("escape_max_turn_s", 8.0)
         self.declare_parameter("escape_freed_threshold_m", 0.3)  # GT motion that counts as "freed"
-        self.declare_parameter("escape_check_delay_s", 1.0)      # sim time to wait before judging the result
+        self.declare_parameter(
+            "escape_check_delay_s", 1.0
+        )  # sim time to wait before judging the result
         self.declare_parameter("stuck_relapse_window_s", 120.0)  # re-stick within this => escalate
         # Keep-out marking: where the obstacle is relative to the rover when it
         # wedges (it is in front - that is the direction it was pushing).
@@ -136,19 +150,19 @@ class FlipRecoveryNode(Node):
         self._flip_since = None
         self._cooldown_until = None
         self._resets = 0
-        self._consecutive = 0        # rapid re-flips near the same spot
+        self._consecutive = 0  # rapid re-flips near the same spot
         self._last_reset_t = None
 
         self._last_cmd = Twist()
-        self._prev_tick_pose = None   # (t, x, y) from the previous _tick, for a GT speed estimate
+        self._prev_tick_pose = None  # (t, x, y) from the previous _tick, for a GT speed estimate
         self._stuck_since = None
         self._stuck_cooldown_until = None
         self._stuck_resets = 0
-        self._stuck_consecutive = 0   # escalation level: events inside relapse_window of each other
+        self._stuck_consecutive = 0  # escalation level: events inside relapse_window of each other
         self._last_stuck_t = None
-        self._escapes_freed = 0       # escape maneuvers that produced real motion
+        self._escapes_freed = 0  # escape maneuvers that produced real motion
         self._pending_escape_check = None  # (x, y, level) sampled before the maneuver
-        self._slip_since = None       # onboard wheel-slip signal asserted since
+        self._slip_since = None  # onboard wheel-slip signal asserted since
         # Measured sim-seconds per wall-second, tracked in _tick. Escape
         # maneuvers are specified in SIM time (that is the rover's own time -
         # 0.2 m/s for 3 s means 0.6 m of ground covered), but they have to be
@@ -158,10 +172,12 @@ class FlipRecoveryNode(Node):
         # about 0.28x real time, so the old 1.0 s nudge was 0.28 s of rover
         # time, about 6 cm of travel.
         self._rtf = 1.0
-        self._rtf_sample = None       # (wall_t, sim_t) from the previous tick
+        self._rtf_sample = None  # (wall_t, sim_t) from the previous tick
         self._trigger_counts = {"ground truth": 0, "wheel slip (onboard)": 0}
-        self._trigger = None          # which detector fired the current recovery
-        self._estimated_pose = None   # /odometry/filtered, for marking hazards in the planner's frame
+        self._trigger = None  # which detector fired the current recovery
+        self._estimated_pose = (
+            None  # /odometry/filtered, for marking hazards in the planner's frame
+        )
         self._last_goal = None
 
         self.create_subscription(PoseStamped, "/ground_truth/pose", self._on_pose, 10)
@@ -364,7 +380,7 @@ class FlipRecoveryNode(Node):
         level = self._stuck_consecutive
         rate_hz = self.get_parameter("stuck_nudge_rate_hz").value
         reverse_s = min(
-            self.get_parameter("escape_reverse_s").value * (2 ** level),
+            self.get_parameter("escape_reverse_s").value * (2**level),
             self.get_parameter("escape_max_reverse_s").value,
         )
         turn_s = min(
@@ -503,7 +519,7 @@ class FlipRecoveryNode(Node):
 
         base_backoff = self.get_parameter("backoff_s").value
         max_backoff = self.get_parameter("max_backoff_s").value
-        backoff = min(base_backoff * (2 ** self._consecutive), max_backoff)
+        backoff = min(base_backoff * (2**self._consecutive), max_backoff)
 
         # Newest upright pose that is at least `backoff` seconds old (steps the
         # rover back along the path it actually drove); fall back to the oldest.
@@ -560,9 +576,18 @@ class FlipRecoveryNode(Node):
             f"orientation {{ x: 0 y: 0 z: {qz:.6f} w: {qw:.6f} }}"
         )
         cmd = [
-            "gz", "service", "-s", f"/world/{world}/set_pose",
-            "--reqtype", "gz.msgs.Pose", "--reptype", "gz.msgs.Boolean",
-            "--timeout", "3000", "--req", req,
+            "gz",
+            "service",
+            "-s",
+            f"/world/{world}/set_pose",
+            "--reqtype",
+            "gz.msgs.Pose",
+            "--reptype",
+            "gz.msgs.Boolean",
+            "--timeout",
+            "3000",
+            "--req",
+            req,
         ]
         try:
             out = subprocess.run(cmd, capture_output=True, text=True, timeout=6)

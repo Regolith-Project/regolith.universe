@@ -23,21 +23,19 @@ being waited out in a real run.
 
 import math
 
-from regolith_vehicle_interface.pure_pursuit_node import (
-    APPROACHING,
-    ARRIVED,
-    CLOSEST_APPROACH,
-    FAR,
-    TerminalApproach,
-)
+from regolith_vehicle_interface.pure_pursuit_node import APPROACHING
+from regolith_vehicle_interface.pure_pursuit_node import ARRIVED
+from regolith_vehicle_interface.pure_pursuit_node import CLOSEST_APPROACH
+from regolith_vehicle_interface.pure_pursuit_node import FAR
+from regolith_vehicle_interface.pure_pursuit_node import TerminalApproach
 
 # The shipped settings.
 RADIUS_M = 3.0
 TOLERANCE_M = 0.35
 GIVEBACK_M = 0.5
 PATIENCE_S = 15.0
-STEP_S = 0.1        # control_period_s
-SPEED_MPS = 0.2     # base_speed_mps
+STEP_S = 0.1  # control_period_s
+SPEED_MPS = 0.2  # base_speed_mps
 
 
 def approach() -> TerminalApproach:

@@ -9,24 +9,24 @@
 
   <buildtool_depend>ament_cmake</buildtool_depend>
 
-  <exec_depend>regolith_terrain_gen</exec_depend>
-  <exec_depend>regolith_rover_description</exec_depend>
-  <exec_depend>ros_gz_sim</exec_depend>
-  <exec_depend>ros_gz_bridge</exec_depend>
-  <exec_depend>launch_ros</exec_depend>
-  <exec_depend>robot_state_publisher</exec_depend>
-  <exec_depend>robot_localization</exec_depend>
-  <exec_depend>rclpy</exec_depend>
-  <exec_depend>sensor_msgs</exec_depend>
-  <exec_depend>nav_msgs</exec_depend>
-  <exec_depend>std_msgs</exec_depend>
   <exec_depend>geometry_msgs</exec_depend>
-  <exec_depend>visualization_msgs</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
   <exec_depend>python3-numpy</exec_depend>
-  <exec_depend>xacro</exec_depend>
+  <exec_depend>rclpy</exec_depend>
   <exec_depend>regolith_costmap</exec_depend>
   <exec_depend>regolith_planner</exec_depend>
+  <exec_depend>regolith_rover_description</exec_depend>
+  <exec_depend>regolith_terrain_gen</exec_depend>
   <exec_depend>regolith_vehicle_interface</exec_depend>
+  <exec_depend>robot_localization</exec_depend>
+  <exec_depend>robot_state_publisher</exec_depend>
+  <exec_depend>ros_gz_bridge</exec_depend>
+  <exec_depend>ros_gz_sim</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>visualization_msgs</exec_depend>
+  <exec_depend>xacro</exec_depend>
 
   <export>
     <build_type>ament_cmake</build_type>

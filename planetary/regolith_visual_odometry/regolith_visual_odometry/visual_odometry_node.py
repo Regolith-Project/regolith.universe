@@ -38,17 +38,20 @@ that consulted /ground_truth/pose would be meaningless. Its inputs are the two
 cameras and nothing else.
 """
 
+from cv_bridge import CvBridge
+from message_filters import ApproximateTimeSynchronizer
+from message_filters import Subscriber
+from nav_msgs.msg import Odometry
 import numpy as np
 import rclpy
-import tf2_ros
-from cv_bridge import CvBridge
-from message_filters import ApproximateTimeSynchronizer, Subscriber
-from nav_msgs.msg import Odometry
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, ReliabilityPolicy
-from sensor_msgs.msg import CameraInfo, Image
-
-from regolith_visual_odometry.vo_core import VoConfig, estimate_motion
+from rclpy.qos import QoSProfile
+from rclpy.qos import ReliabilityPolicy
+from regolith_visual_odometry.vo_core import VoConfig
+from regolith_visual_odometry.vo_core import estimate_motion
+from sensor_msgs.msg import CameraInfo
+from sensor_msgs.msg import Image
+import tf2_ros
 
 # Covariance robot_localization reads as "no information here". Large but finite:
 # an inf or NaN anywhere in the matrix poisons the filter's own arithmetic.
@@ -119,7 +122,9 @@ class VisualOdometryNode(Node):
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
 
-        self.publisher = self.create_publisher(Odometry, self.get_parameter("output_topic").value, 10)
+        self.publisher = self.create_publisher(
+            Odometry, self.get_parameter("output_topic").value, 10
+        )
         self.create_subscription(
             CameraInfo, self.get_parameter("camera_info_topic").value, self._on_camera_info, 10
         )
@@ -131,8 +136,12 @@ class VisualOdometryNode(Node):
         image_qos = QoSProfile(depth=5, reliability=ReliabilityPolicy.BEST_EFFORT)
         self.sync = ApproximateTimeSynchronizer(
             [
-                Subscriber(self, Image, self.get_parameter("image_topic").value, qos_profile=image_qos),
-                Subscriber(self, Image, self.get_parameter("depth_topic").value, qos_profile=image_qos),
+                Subscriber(
+                    self, Image, self.get_parameter("image_topic").value, qos_profile=image_qos
+                ),
+                Subscriber(
+                    self, Image, self.get_parameter("depth_topic").value, qos_profile=image_qos
+                ),
             ],
             queue_size=10,
             slop=0.05,
@@ -180,7 +189,9 @@ class VisualOdometryNode(Node):
             return
 
         gray = self.bridge.imgmsg_to_cv2(image_msg, desired_encoding="mono8")
-        depth = np.asarray(self.bridge.imgmsg_to_cv2(depth_msg, desired_encoding="32FC1"), dtype=np.float32)
+        depth = np.asarray(
+            self.bridge.imgmsg_to_cv2(depth_msg, desired_encoding="32FC1"), dtype=np.float32
+        )
         stamp_s = image_msg.header.stamp.sec + image_msg.header.stamp.nanosec * 1e-9
 
         if self.keyframe is None:

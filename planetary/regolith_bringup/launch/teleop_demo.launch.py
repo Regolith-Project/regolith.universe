@@ -9,7 +9,11 @@ Drive with, in another terminal:
 """
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, ExecuteProcess, IncludeLaunchDescription, OpaqueFunction, TimerAction
+from launch.actions import DeclareLaunchArgument
+from launch.actions import ExecuteProcess
+from launch.actions import IncludeLaunchDescription
+from launch.actions import OpaqueFunction
+from launch.actions import TimerAction
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
@@ -47,17 +51,16 @@ def _generate_and_launch(context, *args, **kwargs):
     manifest = json.loads((output_dir / "manifest.json").read_text())
     spawn_z = manifest["spawn_zone"]["elevation_m"] + 0.5
 
-    xacro_path = FindPackageShare("regolith_rover_description").find(
-        "regolith_rover_description"
-    ) + "/urdf/regolith_rover.urdf.xacro"
+    xacro_path = (
+        FindPackageShare("regolith_rover_description").find("regolith_rover_description")
+        + "/urdf/regolith_rover.urdf.xacro"
+    )
     urdf_xml = xacro.process_file(xacro_path).toxml()
     rover_urdf_path = output_dir / "rover.urdf"
     rover_urdf_path.write_text(urdf_xml)
 
     gz_sim = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            [FindPackageShare("ros_gz_sim"), "/launch/gz_sim.launch.py"]
-        ),
+        PythonLaunchDescriptionSource([FindPackageShare("ros_gz_sim"), "/launch/gz_sim.launch.py"]),
         launch_arguments={"gz_args": f"-r {world_sdf_path}"}.items(),
     )
 
@@ -75,11 +78,22 @@ def _generate_and_launch(context, *args, **kwargs):
         actions=[
             ExecuteProcess(
                 cmd=[
-                    "ros2", "run", "ros_gz_sim", "create",
-                    "-world", WORLD_NAME,
-                    "-file", str(rover_urdf_path),
-                    "-name", ROVER_NAME,
-                    "-x", "0", "-y", "0", "-z", str(spawn_z),
+                    "ros2",
+                    "run",
+                    "ros_gz_sim",
+                    "create",
+                    "-world",
+                    WORLD_NAME,
+                    "-file",
+                    str(rover_urdf_path),
+                    "-name",
+                    ROVER_NAME,
+                    "-x",
+                    "0",
+                    "-y",
+                    "0",
+                    "-z",
+                    str(spawn_z),
                 ],
                 output="screen",
             )
@@ -116,7 +130,9 @@ def _generate_and_launch(context, *args, **kwargs):
 def generate_launch_description() -> LaunchDescription:
     return LaunchDescription(
         [
-            DeclareLaunchArgument("seed", default_value="42", description="Terrain generation seed"),
+            DeclareLaunchArgument(
+                "seed", default_value="42", description="Terrain generation seed"
+            ),
             OpaqueFunction(function=_generate_and_launch),
         ]
     )

@@ -17,8 +17,8 @@ smallest attitude span seen in a 15 s window was 0.0276 rad, against the
 
 import importlib.util
 import math
-import sys
 from pathlib import Path
+import sys
 
 import pytest
 
@@ -117,10 +117,10 @@ def test_yaw_wrap_is_not_mistaken_for_motion():
 @pytest.mark.parametrize(
     "observed_fraction,expected_slip",
     [
-        (0.08, True),    # bottom of the measured slipping band
-        (0.124, True),   # top of it
+        (0.08, True),  # bottom of the measured slipping band
+        (0.124, True),  # top of it
         (0.169, False),  # bottom of the measured honest-driving band
-        (0.85, False),   # median honest driving
+        (0.85, False),  # median honest driving
     ],
 )
 def test_measured_rotation_bands(observed_fraction, expected_slip):

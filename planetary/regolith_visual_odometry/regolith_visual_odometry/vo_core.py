@@ -167,8 +167,9 @@ class VoEstimate:
     reason: str = ""
 
 
-def _invalid(reason: str, n_tracked: int = 0, n_inliers: int = 0,
-             mask_fraction: float = 0.0) -> VoEstimate:
+def _invalid(
+    reason: str, n_tracked: int = 0, n_inliers: int = 0, mask_fraction: float = 0.0
+) -> VoEstimate:
     return VoEstimate(
         valid=False,
         linear_mps=np.zeros(3),
@@ -327,15 +328,17 @@ def estimate_motion(
     prev_xy, cur_xy = track_features(prev_view, cur_view, corners, cfg)
     n_tracked = len(prev_xy)
     if n_tracked < cfg.min_inliers:
-        return _invalid("too few tracked features", n_tracked=n_tracked,
-                        mask_fraction=mask_fraction)
+        return _invalid(
+            "too few tracked features", n_tracked=n_tracked, mask_fraction=mask_fraction
+        )
 
     depths = sample_depth(prev_depth, prev_xy)
     usable = np.isfinite(depths) & (depths >= cfg.min_depth_m) & (depths <= cfg.max_depth_m)
     prev_xy, cur_xy, depths = prev_xy[usable], cur_xy[usable], depths[usable]
     if len(prev_xy) < cfg.min_inliers:
-        return _invalid("too few features with usable depth", n_tracked=n_tracked,
-                        mask_fraction=mask_fraction)
+        return _invalid(
+            "too few features with usable depth", n_tracked=n_tracked, mask_fraction=mask_fraction
+        )
 
     object_points = back_project(prev_xy, depths, k_matrix)
     ok, rvec, tvec, inliers = cv2.solvePnPRansac(
@@ -349,8 +352,12 @@ def estimate_motion(
     )
     if not ok or inliers is None or len(inliers) < cfg.min_inliers:
         n_in = 0 if inliers is None else len(inliers)
-        return _invalid("PnP found no consensus", n_tracked=n_tracked, n_inliers=n_in,
-                        mask_fraction=mask_fraction)
+        return _invalid(
+            "PnP found no consensus",
+            n_tracked=n_tracked,
+            n_inliers=n_in,
+            mask_fraction=mask_fraction,
+        )
 
     inliers = inliers.ravel()
     projected, _ = cv2.projectPoints(object_points[inliers], rvec, tvec, k_matrix, None)

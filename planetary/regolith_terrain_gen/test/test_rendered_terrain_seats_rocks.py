@@ -35,15 +35,14 @@ covered by that run - it is the only check in the suite that can see one.
 """
 
 import os
+from pathlib import Path
 import re
 import shutil
 import subprocess
 import time
-from pathlib import Path
 
 import numpy as np
 import pytest
-
 from regolith_terrain_gen.config import TerrainConfig
 from regolith_terrain_gen.generate import generate_world
 from regolith_terrain_gen.heightmap import build_heightmap
@@ -94,7 +93,8 @@ def _horizon_pose(cfg: TerrainConfig) -> str:
 def _capture(world_sdf: Path, pose: str, out_png: Path, timeout_s=90) -> Path:
     """Launch the GUI on this world at this pose and screenshot the window."""
     text = re.sub(
-        r"<camera_pose>[^<]*</camera_pose>", f"<camera_pose>{pose}</camera_pose>",
+        r"<camera_pose>[^<]*</camera_pose>",
+        f"<camera_pose>{pose}</camera_pose>",
         world_sdf.read_text(),
     )
     shot_world = world_sdf.parent / "horizon_probe.sdf"
@@ -107,7 +107,8 @@ def _capture(world_sdf: Path, pose: str, out_png: Path, timeout_s=90) -> Path:
     time.sleep(2)
     proc = subprocess.Popen(
         ["gz", "sim", "-r", "-v", "1", str(shot_world)],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
     )
     try:
         deadline = time.time() + timeout_s
@@ -146,7 +147,7 @@ def _read_viewport(png: Path) -> np.ndarray:
     im = np.array(Image.open(png).convert("RGB")).astype(int)
     h, w = im.shape[:2]
     t, b, l, r = VIEWPORT
-    return im[int(t * h):int(b * h), int(l * w):int(r * w)]
+    return im[int(t * h) : int(b * h), int(l * w) : int(r * w)]
 
 
 def _sky_mask(view: np.ndarray) -> np.ndarray:
@@ -172,9 +173,15 @@ def detached_columns(png: Path):
         bounds = np.concatenate([[0], edges, [len(column)]])
         runs = [(bool(column[s]), int(e - s)) for s, e in zip(bounds[:-1], bounds[1:])]
         for k in range(len(runs) - 3):
-            (is_sky, _), (o_sky, o_len), (g_sky, g_len), (n_sky, _) = runs[k:k + 4]
-            if (is_sky and not o_sky and g_sky and not n_sky
-                    and o_len >= MIN_OBJECT_PX and g_len >= MIN_SKY_GAP_PX):
+            (is_sky, _), (o_sky, o_len), (g_sky, g_len), (n_sky, _) = runs[k : k + 4]
+            if (
+                is_sky
+                and not o_sky
+                and g_sky
+                and not n_sky
+                and o_len >= MIN_OBJECT_PX
+                and g_len >= MIN_SKY_GAP_PX
+            ):
                 hits.append((c, o_len, g_len))
                 break
     return hits
@@ -210,7 +217,8 @@ def test_the_check_can_actually_fail(tmp_path):
 
     lifted = re.sub(
         r'(<model name="rock_\d+">\s*<static>true</static>\s*<pose>)([^<]+)</pose>',
-        raise_rock, world.read_text(),
+        raise_rock,
+        world.read_text(),
     )
     assert lifted != world.read_text(), "no rock poses were rewritten"
     world.write_text(lifted)
