@@ -9,12 +9,12 @@ on:
   push:
     branches: [main]
     paths:
-      - "planetary/**"
-      - ".github/workflows/regolith-build.yaml"
+      - planetary/**
+      - .github/workflows/regolith-build.yaml
   pull_request:
     paths:
-      - "planetary/**"
-      - ".github/workflows/regolith-build.yaml"
+      - planetary/**
+      - .github/workflows/regolith-build.yaml
 
 permissions:
   contents: read
