@@ -1,8 +1,10 @@
 name: bump-repo-versions-build-depends
 
 on:
-  schedule:
-    - cron: 0 0,6,12,18 * * *
+  # schedule trigger removed: needs secrets.APP_ID/PRIVATE_KEY (Autoware's
+  # GitHub App) to open PRs against autowarefoundation/autoware_universe,
+  # which this fork doesn't have and doesn't need - out of scope, see
+  # regolith-build.yaml. Left as workflow_dispatch in case it's ever wanted.
   workflow_dispatch:
 
 jobs:

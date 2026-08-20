@@ -5,8 +5,9 @@
 name: sync-files
 
 on:
-  schedule:
-    - cron: 0 0 * * *
+  # schedule trigger removed: needs secrets.APP_ID/PRIVATE_KEY (Autoware's
+  # GitHub App), which this fork doesn't have. Left as workflow_dispatch in
+  # case it's ever wanted.
   workflow_dispatch:
 
 concurrency:

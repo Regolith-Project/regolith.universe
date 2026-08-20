@@ -5,8 +5,11 @@
 name: update-codeowners-from-packages
 
 on:
-  schedule:
-    - cron: 0 0 * * *
+  # schedule trigger removed: needs secrets.APP_ID/PRIVATE_KEY (Autoware's
+  # GitHub App), which this fork doesn't have. Left as workflow_dispatch in
+  # case it's ever wanted; note this file is normally synced from
+  # autowarefoundation/sync-file-templates (see header above), so re-syncing
+  # will restore the schedule unless that's disabled too.
   workflow_dispatch:
 
 concurrency:
