@@ -69,8 +69,8 @@ class TerminalApproach:
     The last two mean "this is as close as you are going to get" - the rover
     stops at its best achieved distance instead of driving in circles. That is
     a worse arrival than ARRIVED and is logged as one, but it is bounded, and
-    it is never worse than the 1.0 m tolerance would have been: it can only
-    trigger after the rover has already come closer than it now is.
+    it can never be worse than the old, generous tolerance would have been:
+    it can only trigger after the rover has already come closer than it now is.
 
     Pure state, no ROS, no clock of its own - the node feeds it sim-time
     seconds - so the termination guarantee can be tested directly.
@@ -136,8 +136,16 @@ class PurePursuitNode(Node):
         # How much margin is a measured question, not a taste one: at 1.0 m the
         # stop itself consumed two thirds of the bar before drift, and seed 7
         # missed by 0.20 m with only 0.70 m of drift. TerminalApproach is what
-        # makes tightening this safe - see its docstring.
-        self.declare_parameter("goal_tolerance_m", 1.0)
+        # makes tightening this safe - see its docstring. Default tightened to
+        # 0.35 m after the seed-7 replicate campaign (n=3 both arms, PROGRESS.md
+        # "The stopping tolerance, measured"): 0/3 FAIL at 1.0 m (1.53-1.60 m,
+        # every run over the 1.5 m bar) vs. 3/3 PASS at 0.35 m (1.46-1.47 m,
+        # actual stops 1.00-1.08 m where measured), with zero CLOSEST_APPROACH
+        # fallback firings across all ten campaign runs - the circling risk this
+        # class guards against did not materialise. Seeds 42/123 are unaffected
+        # either way: they fail by 5-11 m of drift, never close enough to reach
+        # TerminalApproach's 3.0 m radius regardless of this value.
+        self.declare_parameter("goal_tolerance_m", 0.35)
         self.declare_parameter("terminal_radius_m", 3.0)
         self.declare_parameter("terminal_giveback_m", 0.5)
         self.declare_parameter("terminal_patience_s", 15.0)

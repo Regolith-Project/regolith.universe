@@ -561,10 +561,13 @@ def generate_launch_description() -> LaunchDescription:
             ),
             DeclareLaunchArgument(
                 "goal_tolerance_m",
-                default_value="1.0",
+                default_value="0.35",
                 description="How close pure pursuit drives to the commanded goal before "
                 "stopping. Counts against M4's 1.5 m arrival bar directly, so "
-                "it is a measured setting, not a taste one",
+                "it is a measured setting, not a taste one. Tightened from the "
+                "original 1.0 m after the seed-7 replicate campaign showed a "
+                "clean 0/3 vs 3/3 separation with no orbiting fallback firing - "
+                "see PROGRESS.md, 'The stopping tolerance, measured'",
             ),
             DeclareLaunchArgument(
                 "headless",
