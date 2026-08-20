@@ -405,11 +405,17 @@ def _generate_and_launch(context, *args, **kwargs):
         parameters=[{"use_sim_time": True}],
     )
 
+    # Exposed because it is the parameter M4's arrival error is most sensitive to:
+    # the rover stops this far short of where it believes the goal is, straight off
+    # a 1.5 m bar, before it has drifted at all. Overridable so the two settings can
+    # be compared on the same build rather than argued about - see PROGRESS.md.
+    goal_tolerance_m = float(LaunchConfiguration("goal_tolerance_m").perform(context))
+
     pure_pursuit_node = Node(
         package="regolith_vehicle_interface",
         executable="pure_pursuit_node",
         output="screen",
-        parameters=[{"use_sim_time": True}],
+        parameters=[{"use_sim_time": True, "goal_tolerance_m": goal_tolerance_m}],
     )
 
     # Simulated flip recovery backstop: if the rover still ends up flipped (the
@@ -547,6 +553,12 @@ def generate_launch_description() -> LaunchDescription:
                             "0.4->1.4, 0.7->24.7 and 6.1->15.2 m, same build, oracle off). It is "
                             "a real onboard sensor, not an oracle, so its results would be "
                             "milestone results - they are just bad ones. See PROGRESS.md"
+            ),
+            DeclareLaunchArgument(
+                "goal_tolerance_m", default_value="1.0",
+                description="How close pure pursuit drives to the commanded goal before "
+                            "stopping. Counts against M4's 1.5 m arrival bar directly, so "
+                            "it is a measured setting, not a taste one"
             ),
             DeclareLaunchArgument(
                 "headless", default_value="false",

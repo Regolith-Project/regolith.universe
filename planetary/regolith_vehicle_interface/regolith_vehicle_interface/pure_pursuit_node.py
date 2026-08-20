@@ -39,6 +39,82 @@ def _normalize_angle(angle: float) -> float:
     return (angle + np.pi) % (2 * np.pi) - np.pi
 
 
+# Outcomes of TerminalApproach.update().
+FAR = "far"
+APPROACHING = "approaching"
+ARRIVED = "arrived"
+CLOSEST_APPROACH = "closest_approach"
+
+
+class TerminalApproach:
+    """Bounds the last few metres of a goal approach, so the stop tolerance can
+    be tightened without the follower circling forever.
+
+    Why this exists: with `goal_tolerance_m` at 1.0 m the rover stopped a metre
+    short of where it believed the goal was, which ate two thirds of M4's 1.5 m
+    arrival bar before it had drifted at all - seed 7 failed by 0.20 m for that
+    reason alone (see PROGRESS.md, "Where M4 actually stands now"). The reason
+    the tolerance was left generous is real, though: a pure pursuit follower
+    told to stop closer than it can steer will orbit the goal, or stop-and-spin
+    on a bearing that swings as fast as it turns, and never terminate.
+
+    So the tight tolerance is made safe rather than assumed safe. Inside
+    `radius_m` this tracks the closest approach achieved and ends the approach
+    on whichever comes first:
+
+      * `distance <= tolerance_m`                        -> ARRIVED
+      * receded `giveback_m` past the closest approach   -> CLOSEST_APPROACH
+      * no new closest approach for `patience_s`         -> CLOSEST_APPROACH
+
+    The last two mean "this is as close as you are going to get" - the rover
+    stops at its best achieved distance instead of driving in circles. That is
+    a worse arrival than ARRIVED and is logged as one, but it is bounded, and
+    it is never worse than the 1.0 m tolerance would have been: it can only
+    trigger after the rover has already come closer than it now is.
+
+    Pure state, no ROS, no clock of its own - the node feeds it sim-time
+    seconds - so the termination guarantee can be tested directly.
+    """
+
+    def __init__(self, radius_m: float, tolerance_m: float, giveback_m: float,
+                 patience_s: float, improvement_m: float = 0.05):
+        self.radius_m = radius_m
+        self.tolerance_m = tolerance_m
+        self.giveback_m = giveback_m
+        self.patience_s = patience_s
+        # A creeping approach at 0.2 m/s covers 0.05 m in a quarter second, so
+        # requiring this much improvement to reset the patience clock never
+        # penalises genuine progress - it only stops estimator noise of a
+        # centimetre or two from renewing the clock forever.
+        self.improvement_m = improvement_m
+        self.reset()
+
+    def reset(self) -> None:
+        self.closest_m = None      # best distance achieved this approach
+        self._progress_ref_m = None  # distance at the last patience-clock reset
+        self._progress_at_s = None
+
+    def update(self, distance_m: float, now_s: float) -> str:
+        if distance_m >= self.radius_m:
+            self.reset()
+            return FAR
+        if distance_m <= self.tolerance_m:
+            return ARRIVED
+
+        self.closest_m = distance_m if self.closest_m is None else min(self.closest_m, distance_m)
+
+        if self._progress_ref_m is None or distance_m < self._progress_ref_m - self.improvement_m:
+            self._progress_ref_m = distance_m
+            self._progress_at_s = now_s
+            return APPROACHING
+
+        if distance_m > self.closest_m + self.giveback_m:
+            return CLOSEST_APPROACH
+        if now_s - self._progress_at_s > self.patience_s:
+            return CLOSEST_APPROACH
+        return APPROACHING
+
+
 class PurePursuitNode(Node):
     def __init__(self):
         super().__init__("regolith_pure_pursuit")
@@ -50,7 +126,15 @@ class PurePursuitNode(Node):
         # requirement, so every pass measured exactly 1.50 m and any small
         # difference between this node's frame and the judge's would flip it to
         # a fail. Arriving with margin is the point; the bar itself is unchanged.
+        #
+        # How much margin is a measured question, not a taste one: at 1.0 m the
+        # stop itself consumed two thirds of the bar before drift, and seed 7
+        # missed by 0.20 m with only 0.70 m of drift. TerminalApproach is what
+        # makes tightening this safe - see its docstring.
         self.declare_parameter("goal_tolerance_m", 1.0)
+        self.declare_parameter("terminal_radius_m", 3.0)
+        self.declare_parameter("terminal_giveback_m", 0.5)
+        self.declare_parameter("terminal_patience_s", 15.0)
         self.declare_parameter("path_deviation_limit_m", 4.0)
         self.declare_parameter("stall_timeout_s", 8.0)
         self.declare_parameter("control_period_s", 0.1)
@@ -79,6 +163,12 @@ class PurePursuitNode(Node):
         self._replan_count = 0
         self._given_up_goal_xy = None  # (x, y) of a goal we've stopped retrying
         self._recovery_active = False
+        self._terminal = TerminalApproach(
+            radius_m=self.get_parameter("terminal_radius_m").value,
+            tolerance_m=self.get_parameter("goal_tolerance_m").value,
+            giveback_m=self.get_parameter("terminal_giveback_m").value,
+            patience_s=self.get_parameter("terminal_patience_s").value,
+        )
 
         costmap_qos = QoSProfile(depth=1)
         costmap_qos.durability = QoSDurabilityPolicy.TRANSIENT_LOCAL
@@ -144,6 +234,7 @@ class PurePursuitNode(Node):
             # goal after a deviation/stall. Give the new goal a fresh budget.
             self._replan_count = 0
             self._given_up_goal_xy = None
+            self._terminal.reset()
         self._current_goal = msg
 
     def _on_odometry(self, msg: Odometry) -> None:
@@ -207,8 +298,24 @@ class PurePursuitNode(Node):
     def _stop(self) -> None:
         self._cmd_pub.publish(Twist())
 
+    def _finish_goal(self, message: str, warn: bool = False) -> None:
+        self._stop()
+        self._goal_reached = True
+        self._replan_count = 0
+        self._given_up_goal_xy = None
+        self._terminal.reset()
+        (self.get_logger().warn if warn else self.get_logger().info)(message)
+        self._goal_reached_pub.publish(Bool(data=True))
+
     def _control_step(self) -> None:
         if self._recovery_active:
+            # An escape maneuver drives the rover away from wherever it was, and
+            # near a goal that reads exactly like giving up on it. Rather than
+            # discount the time, drop the approach entirely and let it be
+            # re-earned once this node is steering again - a premature stop is
+            # a worse failure than a slow one, and the replan cap already bounds
+            # how long a goal can be retried.
+            self._terminal.reset()
             return  # the recovery node owns /cmd_vel; do not fight it
         if self._check_flipped():
             self._stop()
@@ -241,13 +348,21 @@ class PurePursuitNode(Node):
             np.array(current_goal_xy) if current_goal_xy is not None else self._path[-1]
         )
         distance_to_goal = float(np.linalg.norm(goal_xy - position))
-        if distance_to_goal < self.get_parameter("goal_tolerance_m").value:
-            self._stop()
-            self._goal_reached = True
-            self._replan_count = 0
-            self._given_up_goal_xy = None
-            self.get_logger().info(f"Goal reached (within {distance_to_goal:.2f} m of the commanded goal)")
-            self._goal_reached_pub.publish(Bool(data=True))
+        now_s = self.get_clock().now().nanoseconds / 1e9
+        outcome = self._terminal.update(distance_to_goal, now_s)
+        if outcome == ARRIVED:
+            self._finish_goal(f"Goal reached (within {distance_to_goal:.2f} m of the commanded goal)")
+            return
+        if outcome == CLOSEST_APPROACH:
+            # Bounded rather than circling - see TerminalApproach. Reported as
+            # the second-class arrival it is: the number that matters is how
+            # close the rover actually got, and it is on the record either way.
+            self._finish_goal(
+                f"Stopping at closest approach: {self._terminal.closest_m:.2f} m from the "
+                f"commanded goal (now {distance_to_goal:.2f} m), which is as close as this "
+                f"approach got. Tolerance is {self._terminal.tolerance_m:.2f} m.",
+                warn=True,
+            )
             return
 
         distances = np.linalg.norm(self._path - position, axis=1)
@@ -324,6 +439,10 @@ class PurePursuitNode(Node):
         self._path = None
         self._last_progress_position = None
         self._last_progress_time = self.get_clock().now()
+        # Same reasoning as the recovery branch: a replan is the follower
+        # admitting it was not making progress, not evidence about how close to
+        # the goal it can get. Give the new path a fresh approach.
+        self._terminal.reset()
 
         if self._current_goal is None:
             return
