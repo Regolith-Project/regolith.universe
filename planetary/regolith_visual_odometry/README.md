@@ -6,7 +6,7 @@ on `/vo/odom`, which the EKF fuses as `odom1` (see
 
 ## Why it exists
 
-M4's acceptance was **0/3**, with the rover arriving 3.1–13.1 m from its goal.
+M4's acceptance was **0/3**, with the rover arriving 3.1-13.1 m from its goal.
 The cause was pinned by measurement, not argument: on every seed the true error
 equalled the EKF's own drift plus the stopping tolerance, to within centimetres.
 The rover was arriving exactly where it believed the goal was.
@@ -16,12 +16,12 @@ slide**, and nothing in the previous sensor suite could see it:
 
 | sensor | observes | cannot observe |
 |---|---|---|
-| wheel odometry | `vx`, `vyaw` | `vy` — a differential-drive model assumes it is zero *by construction* |
+| wheel odometry | `vx`, `vyaw` | `vy` - a differential-drive model assumes it is zero *by construction* |
 | IMU | orientation, angular rate | position error of any kind |
 
 So the lateral error accumulated as a random walk that nothing ever corrected.
 Feeding the same build an absolute position reference (0.5 m, 1 Hz) turned 0/3
-into 3/3, which is what identified the estimator — and only the estimator — as
+into 3/3, which is what identified the estimator - and only the estimator - as
 the gap. This package is the real sensor that fills it.
 
 ## What it does and does not promise
@@ -30,14 +30,14 @@ Visual odometry is a **relative** sensor. It is *not* the oracle that produced
 that 3/3: the oracle handed the filter absolute position and drove EKF
 divergence to 0.00 m, which nothing onboard can do. VO makes the drift *grow
 more slowly* by observing the term that was structurally invisible. Published
-planetary-rover VO runs on the order of 1–2% of distance travelled; over this
-acceptance's ~110 m traverses that is 1–2 m against a 1.5 m bar. Close, not
-comfortable — and the real number is whatever the acceptance run measures.
+planetary-rover VO runs on the order of 1-2% of distance travelled; over this
+acceptance's ~110 m traverses that is 1-2 m against a 1.5 m bar. Close, not
+comfortable - and the real number is whatever the acceptance run measures.
 
 ## How it works
 
-1. Shi–Tomasi corners on the keyframe, tracked into the current frame with
-   Lucas–Kanade, filtered by a forward/backward consistency check (regolith at a
+1. Shi-Tomasi corners on the keyframe, tracked into the current frame with
+   Lucas-Kanade, filtered by a forward/backward consistency check (regolith at a
    low sun angle is full of near-identical shadowed pits, and a forward-only
    track slides corners onto their neighbours).
 2. The keyframe's corners get metric 3D positions from its depth image.
@@ -48,14 +48,14 @@ comfortable — and the real number is whatever the acceptance run measures.
 5. The lever arm is subtracted: the camera sits 0.2 m ahead of `base_link`, so
    yawing translates the camera even when `base_link` does not.
 
-**Depth is what makes it metric.** A single camera cannot observe scale at all —
+**Depth is what makes it metric.** A single camera cannot observe scale at all -
 monocular VO recovers the shape of a trajectory but not its size, which is
 useless for correcting a metre-scale error.
 
 ### It does not run at frame rate, on purpose
 
 Estimating between adjacent frames is worse than useless here. At 0.2 m/s a
-0.1 s interval moves the camera 2 cm — about **1 px** of optical flow, against a
+0.1 s interval moves the camera 2 cm - about **1 px** of optical flow, against a
 measured **0.74 px** of feature-tracker noise. Signal and noise are the same
 size:
 
@@ -65,7 +65,7 @@ size:
 | recovered speed (true 0.200 m/s) | 0.056 | 0.200 | 0.192 | 0.224 | 0.201 |
 
 So the node holds a **keyframe** and estimates only once ~0.4 s of motion has
-accumulated: ~2.5 updates/s at a worst-case error of 0.051 m/s. That is ample —
+accumulated: ~2.5 updates/s at a worst-case error of 0.051 m/s. That is ample -
 this corrects a drift that grows over minutes, not a control loop.
 
 ## Measured accuracy on real frames
@@ -90,16 +90,16 @@ rover is doing, which is worth stating rather than collapsing to one number:
 |---|---|---|
 | straight-line driving (n=92) | −0.069 m/s (−35%) | +0.003 ± 0.016 |
 | turning (n=38) | −0.036 m/s (−18%) | −0.005 ± 0.022 |
-| one live cruise sample (n=51) | −0.017 m/s (−9%) | — |
+| one live cruise sample (n=51) | −0.017 m/s (−9%) | - |
 
 Wheel odometry measures forward distance to about 1% once slip is gated, so
 fusing this would inject a systematic error into the one term the existing
-sensors already handle well — and a filter that believes it has travelled less
+sensors already handle well - and a filter that believes it has travelled less
 than it has drives past its goal.
 
 The asymmetry is the interesting part: `vy` is unbiased under exactly the same
-conditions that bias `vx`. The leading explanation — consistent with the data
-but not separately proven — is Lucas–Kanade's translation-only motion model.
+conditions that bias `vx`. The leading explanation - consistent with the data
+but not separately proven - is Lucas-Kanade's translation-only motion model.
 Driving forward over near ground makes texture *expand* rapidly between frames,
 and a fixed-window tracker with no affine term systematically under-tracks
 expansion; sliding sideways produces no scale change at all, so it does not.
@@ -112,14 +112,14 @@ The first live run refused **100%** of frame pairs. All three causes were
 invisible in synthetic testing:
 
 1. **Corners were being found in the sky.** The strongest contrast in a lunar
-   scene is the skyline, and sky has no range — 25 corners found, 8 with usable
+   scene is the skyline, and sky has no range - 25 corners found, 8 with usable
    depth, against an inlier floor of 20. Fixed by masking the detector to
    pixels that have depth.
-2. **The image is dim and flat** (values 10–124, sd 9.8). Corner scoring is
+2. **The image is dim and flat** (values 10-124, sd 9.8). Corner scoring is
    relative, so a raw frame yielded 25 corners against a 400 budget. Fixed with
    CLAHE before detection.
 3. **PnP sometimes returns a confident, wildly wrong pose.** 4% of estimates
-   were catastrophic (up to 46 m/s for a 0.2 m/s rover) — and they are trivially
+   were catastrophic (up to 46 m/s for a 0.2 m/s rover) - and they are trivially
    identifiable: median reprojection RMS of **87 px** against **0.67 px** for
    the other 96%. Rejected by `max_reprojection_rms_px`. Without that gate those
    4% alone move the mean velocity error from 0.05 to 1.1 m/s.
@@ -142,8 +142,8 @@ pass on a dead channel.
 
 ## It never touches ground truth
 
-Same rule as `wheel_slip_node.py`: this is a localization input, and an
-acceptance number produced by a localization input that consulted
+Same rule as `wheel_slip_node.py`: this is a localisation input, and an
+acceptance number produced by a localisation input that consulted
 `/ground_truth/pose` would be meaningless. Its inputs are the two cameras and
 nothing else. Contrast `absolute_reference_relay.py`, which *is* an oracle,
 announces itself at four layers, and is default-off.
@@ -166,7 +166,7 @@ cd planetary/regolith_visual_odometry && PYTHONPATH=. python3 -m pytest test -q
 They ray-trace a textured, *rough* ground surface from two poses a known rigid
 motion apart, so the expected answer is exact and no simulator is involved. The
 relief matters: a perfectly flat plane makes every landmark coplanar, which is a
-degenerate configuration for PnP — on a flat plane this estimator reports
+degenerate configuration for PnP - on a flat plane this estimator reports
 0.139 m/s for a true 0.200 and invents 0.09 m/s of sideways drift out of a pure
 turn. Real regolith is never that case, so a flat test plane would have been
 testing a situation the rover is never in.

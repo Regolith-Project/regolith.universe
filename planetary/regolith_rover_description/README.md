@@ -7,16 +7,16 @@ plugin in its multi-joint skid-steer configuration (two left wheel joints,
 two right), plus `JointStatePublisher` and `Imu` system plugins.
 
 Stability tuning (see PROGRESS.md M2): wide track and a low chassis for a
-low center of gravity, μ=1.4 wheel friction, and conservative velocity limits
-(0.4 m/s linear, 0.3 rad/s angular) — a narrower/faster earlier revision
+low centre of gravity, μ=1.4 wheel friction, and conservative velocity limits
+(0.4 m/s linear, 0.3 rad/s angular) - a narrower/faster earlier revision
 flipped when turning and driving forward at once over rough terrain.
 
 ## Files
 
-- `urdf/regolith_rover.urdf.xacro` — the rover description; processed by
+- `urdf/regolith_rover.urdf.xacro` - the rover description; processed by
   `regolith_bringup`'s launch files via the `xacro` Python API (in-process,
   not shelled out).
-- `rviz/rover.rviz` — RViz config with RobotModel, TF, Camera, Costmap,
+- `rviz/rover.rviz` - RViz config with RobotModel, TF, Camera, Costmap,
   PlannedPath, and EKF-estimate Odometry displays (raw wheel odometry is
   included but disabled by default), plus a "2D Goal Pose" tool publishing
   `/goal_pose`. Launched automatically by `hello_moon.launch.py`.
