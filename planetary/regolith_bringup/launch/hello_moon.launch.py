@@ -309,11 +309,22 @@ def _generate_and_launch(context, *args, **kwargs):
     # forever (see wheel_slip_node.py and PROGRESS.md's res40 M4 failure). This
     # node republishes /odom as /odom/gated with a zero-velocity update
     # substituted while it detects slip, from onboard signals only.
+    # A/B LEVER ONLY, default False (matches the shipped, fixed behaviour) - see
+    # wheel_slip_node.py's "SIGNATURE 2, RETIRED" and PROGRESS.md. True restores the
+    # pre-fix "rigid body" false-positive path for a same-build comparison campaign.
+    legacy_rigid_body_signature = (
+        LaunchConfiguration("legacy_rigid_body_signature").perform(context).lower() == "true"
+    )
     wheel_slip_node = Node(
         package="regolith_bringup",
         executable="wheel_slip_node.py",
         output="screen",
-        parameters=[{"use_sim_time": True}],
+        parameters=[
+            {
+                "use_sim_time": True,
+                "legacy_rigid_body_signature": legacy_rigid_body_signature,
+            }
+        ],
     )
 
     sensor_covariance_relay = Node(
@@ -568,6 +579,16 @@ def generate_launch_description() -> LaunchDescription:
                 "original 1.0 m after the seed-7 replicate campaign showed a "
                 "clean 0/3 vs 3/3 separation with no orbiting fallback firing - "
                 "see PROGRESS.md, 'The stopping tolerance, measured'",
+            ),
+            DeclareLaunchArgument(
+                "legacy_rigid_body_signature",
+                default_value="false",
+                description="A/B LEVER ONLY. Re-enables wheel_slip_node's retired 'signature "
+                "2' (attitude-span + gyro-RMS rigid-body check), which false-positives on "
+                "ordinary straight-line driving over smooth ground - see PROGRESS.md, "
+                "'Root-caused: the benign-ground traction stall was never a stall'. Default "
+                "false matches the shipped, fixed behaviour; true is for a same-build "
+                "before/after comparison campaign only, not a setting to ship on",
             ),
             DeclareLaunchArgument(
                 "headless",

@@ -33,15 +33,14 @@ itself against the answer key: the whole point is that the estimate has no
 absolute reference, and an oracle-fed ZUPT would make M4's numbers meaningless.
 
 THE DETECTOR. Over a sliding 15 s window it compares what the wheels claim
-against what the IMU shows the body actually did, and declares slip on either
-of two independent signatures.
+against what the IMU shows the body actually did.
 
-  1. ROTATION THE GYRO NEVER SEES (the one that fires in practice). A rover
-     wedged against a boulder is usually still being commanded to turn, so its
-     wheels spin differentially and wheel odometry integrates yaw that never
-     happens. The gyro measures the yaw that did happen. This is the measured
-     separation over a recorded seed-42 wedge, gyro-observed rotation as a
-     fraction of the wheels' claim:
+  1. ROTATION THE GYRO NEVER SEES (the only live signature - see "SIGNATURE 2,
+     RETIRED" below). A rover wedged against a boulder is usually still being
+     commanded to turn, so its wheels spin differentially and wheel odometry
+     integrates yaw that never happens. The gyro measures the yaw that did
+     happen. This is the measured separation over a recorded seed-42 wedge,
+     gyro-observed rotation as a fraction of the wheels' claim:
 
          slipping windows (n=2075)     0.082 .. 0.124
          honest driving   (n=7014)     0.169 .. 1.73   (median 0.85)
@@ -53,35 +52,61 @@ of two independent signatures.
      therefore about the SIZE of a disagreement that is always present, which
      is why the threshold had to be measured rather than reasoned about.
 
-  2. A RIGIDLY STILL BODY while the wheels claim distance - attitude span
-     <= 0.010 rad and gyro RMS <= 0.005 rad/s. This covers the original
-     wheels-locked-static case, where nothing is commanded to turn and
-     signature 1 has nothing to work with. Reported honestly: on the recorded
-     run this path fired on 0 of 7,755 genuine driving windows (so it is not a
-     false-positive risk) and also on 0 of 968 slipping ones (so it has never
-     yet caught a real event either). It is kept because it covers a
-     physically different failure, not because it has been shown to work.
+SIGNATURE 2, RETIRED (2026-08-20). `_body_is_rigid` used to also declare slip
+on "a rigidly still body while the wheels claim distance" - attitude span
+<= 0.010 rad and gyro RMS <= 0.005 rad/s - meant to cover the
+wheels-locked-static case that gives signature 1 nothing to work with
+(nothing commanded to turn). It is no longer called from `slipping()` or
+`clearing()`; the method and its two threshold parameters stay for
+`calibrate_slip_detector.py` and the tests that document why it was retired,
+but it no longer affects the ZUPT.
 
-The first design of this detector used signature 2 alone, on the reasoning
-that a pinned rover cannot tilt. Recorded data refuted it: during the real
-wedge the chassis bucks against the boulder while the wheels spin, spanning
-0.119-0.195 rad of attitude - MORE than the median driving window. The
-"pinned means still" intuition was wrong, and only measuring it showed that.
+The first design of this detector used signature 2 ALONE, on the reasoning
+that a pinned rover cannot tilt. Recorded data refuted that immediately: the
+one real wedge on record bucks the chassis against the boulder while the
+wheels spin, spanning 0.119-0.195 rad of attitude - 12-20x the 0.010 rad
+threshold, so signature 2 could not have caught the very failure it was built
+for. Signature 1 was added because of that gap and is what actually fires in
+practice. Signature 2 was kept anyway, as a hedge for a hypothetical it
+never covers in practice: a rover wedged against something symmetric enough
+to produce zero net torque, so it neither bucks nor turns. That case has
+never once been observed - reported honestly at the time, 0 of 7,755 genuine
+driving windows and 0 of 968 slipping ones in the original calibration run.
 
-WHY THE WINDOW IS 15 SECONDS. An IMU cannot tell constant velocity from rest -
+What ended it: a live reproduction on seed 42 (see PROGRESS.md, "Root-caused:
+the benign-ground traction stall was never a stall") found the false positive
+its own hedge was exposed to. `_body_is_rigid`'s two inputs - attitude span
+and gyro RMS - cannot tell "stationary" from "translating in a straight line
+at constant heading," because neither one observes translation at all
+(exactly the Galilean-invariance point below, which the original design
+already used to justify signature 1's window - it was never checked against
+signature 2). A rover crossing a patch of ground flat and uniform enough to
+hold a dead-straight heading for the full 15 s window produces byte-identical
+`(vx, wz_wheel, wz_gyro, roll, pitch, yaw)` samples whether it is doing that
+for real or wedged in place - there is no threshold on these two inputs that
+separates the cases, because the inputs do not contain the information that
+would separate them. Retiring signature 2 trades a hedge against a failure
+mode that has never been observed for removing one that has now been
+observed - a losing trade kept alive on the win side of a match that had
+never come up. Real coverage for the symmetric-wedge case would need a signal
+the detector does not have (something that observes translation, not
+rotation) - not a narrower threshold on the same two inputs.
+
+WHY THE WINDOW IS 15 SECONDS. Retiring signature 2 does not retire this
+argument - it is also why signature 1 needs enough time to accumulate a
+stable rotation ratio, not just why signature 2's attitude-span threshold
+was set where it was. An IMU cannot tell constant velocity from rest -
 Galilean invariance, not a tuning problem - so any test of this kind needs
 enough time for a real disagreement to accumulate. Attitude span over genuine
-driving, by window length, from the same recording:
+driving, by window length, from the same recording (kept as the historical
+basis for the 15 s choice, even though it was originally measured for
+signature 2 specifically):
 
     window     min attitude span over genuinely-driving windows
       3 s      0.0000 rad   (p5 0.0007)   <- no threshold separates
       6 s      0.0009 rad   (p5 0.0087)
      10 s      0.0080 rad   (p5 0.0269)
-     15 s      0.0276 rad   (p5 0.0307)   <- 2.8x above the threshold used
-
-At 3 s, signature 2 fired on 29% of genuinely-driving windows. The cost of the
-longer window is detection delay, and it is small against the failure it
-prevents: the measured episode accumulated 4.3 m of permanent error.
+     15 s      0.0276 rad   (p5 0.0307)   <- 2.8x above the old threshold
 
 Thresholds are calibrated against recorded runs rather than guessed - see
 scripts/calibrate_slip_detector.py, test_wheel_slip_detector.py, and
@@ -127,6 +152,7 @@ class SlipDetector:
         release_window_s: float = 5.0,
         max_attitude_span_rad: float = 0.010,
         max_gyro_rms_rps: float = 0.005,
+        legacy_rigid_body_signature: bool = False,
     ):
         self.window_s = window_s
         self.min_claimed_distance_m = min_claimed_distance_m
@@ -136,6 +162,11 @@ class SlipDetector:
         self.release_window_s = release_window_s
         self.max_attitude_span_rad = max_attitude_span_rad
         self.max_gyro_rms_rps = max_gyro_rms_rps
+        # A/B LEVER ONLY - see the module docstring's "SIGNATURE 2, RETIRED". Default
+        # False matches the shipped (fixed) behaviour; True restores the pre-fix
+        # behaviour for a same-build comparison campaign. Not meant to stay a live
+        # parameter past that campaign.
+        self.legacy_rigid_body_signature = legacy_rigid_body_signature
         self._samples = deque()  # (t, vx, wz_wheel, wz_gyro, roll, pitch, yaw_unwrapped)
         self.dropped_out_of_order = 0
         self._yaw = None
@@ -214,7 +245,15 @@ class SlipDetector:
         return f["observed_rotation_rad"] <= self.rotation_ratio * f["claimed_rotation_rad"]
 
     def _body_is_rigid(self, f: dict) -> bool:
-        """Nothing the IMU can see moved at all, in any axis."""
+        """Nothing the IMU can see moved at all, in any axis.
+
+        RETIRED from both `slipping()` and `clearing()` - see "SIGNATURE 2,
+        RETIRED" in the module docstring. Kept only for
+        scripts/calibrate_slip_detector.py and the tests that document why it
+        no longer decides anything: it cannot tell a genuinely stationary
+        body from one translating in a straight line at constant heading,
+        because neither of its two inputs observes translation at all.
+        """
         return (
             f["attitude_span_rad"] <= self.max_attitude_span_rad
             and f["gyro_rms_rps"] <= self.max_gyro_rms_rps
@@ -226,7 +265,9 @@ class SlipDetector:
             return False
         if f["claimed_distance_m"] < self.min_claimed_distance_m:
             return False  # no phantom distance to suppress
-        return self._rotation_disagrees(f) or self._body_is_rigid(f)
+        if self._rotation_disagrees(f):
+            return True
+        return self.legacy_rigid_body_signature and self._body_is_rigid(f)
 
     def clearing(self) -> bool:
         """Return True when it is safe to say the slip episode has ended.
@@ -257,7 +298,8 @@ class SlipDetector:
             and f["observed_rotation_rad"]
             <= self.release_rotation_ratio * f["claimed_rotation_rad"]
         )
-        return not (still_disagreeing or self._body_is_rigid(f))
+        still_rigid = self.legacy_rigid_body_signature and self._body_is_rigid(f)
+        return not (still_disagreeing or still_rigid)
 
 
 class WheelSlipNode(Node):
@@ -278,6 +320,9 @@ class WheelSlipNode(Node):
         self.declare_parameter("min_dwell_s", 2.0)
         self.declare_parameter("max_attitude_span_rad", 0.010)
         self.declare_parameter("max_gyro_rms_rps", 0.005)
+        # A/B LEVER ONLY - see the module docstring's "SIGNATURE 2, RETIRED" and
+        # SlipDetector's own comment on this parameter.
+        self.declare_parameter("legacy_rigid_body_signature", False)
 
         self._detector = SlipDetector(
             window_s=self.get_parameter("window_s").value,
@@ -288,6 +333,7 @@ class WheelSlipNode(Node):
             release_window_s=self.get_parameter("release_window_s").value,
             max_attitude_span_rad=self.get_parameter("max_attitude_span_rad").value,
             max_gyro_rms_rps=self.get_parameter("max_gyro_rms_rps").value,
+            legacy_rigid_body_signature=self.get_parameter("legacy_rigid_body_signature").value,
         )
         self._imu = None  # (wz, rpy)
         self._slipping = False
@@ -303,10 +349,13 @@ class WheelSlipNode(Node):
         )
         self._pub = self.create_publisher(Odometry, self.get_parameter("gated_topic").value, 20)
         self._slip_pub = self.create_publisher(Bool, "/wheel_slip", 10)
+        legacy = self.get_parameter("legacy_rigid_body_signature").value
         self.get_logger().info(
             f"Wheel-slip ZUPT armed: {self.get_parameter('odom_topic').value} -> "
             f"{self.get_parameter('gated_topic').value} (onboard signals only - "
-            "wheel odometry and IMU, never ground truth)"
+            "wheel odometry and IMU, never ground truth). "
+            f"legacy_rigid_body_signature={legacy}"
+            + (" [A/B LEVER: retired signature 2 re-enabled]" if legacy else "")
         )
 
     def _on_imu(self, msg: Imu) -> None:
