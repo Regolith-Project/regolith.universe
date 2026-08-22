@@ -87,6 +87,26 @@ def _roll_pitch_yaw(q) -> tuple:
     return roll, pitch, yaw
 
 
+def hazard_point_xy(estimated_xy: tuple, yaw: float, lead_m: float) -> tuple:
+    """Compute where a keep-out marker would land.
+
+    `lead_m` ahead of the estimated pose along its heading - pure geometry,
+    no ROS, so the goal-clearance check below can be tested without a node.
+    """
+    x, y = estimated_xy
+    return (x + lead_m * math.cos(yaw), y + lead_m * math.sin(yaw))
+
+
+def hazard_too_close_to_goal(hazard_xy: tuple, goal_xy: tuple, clearance_m: float) -> bool:
+    """Check whether a keep-out zone at hazard_xy would risk covering the goal.
+
+    See _mark_hazard's docstring for why this can happen at all: the hazard
+    is marked in the estimator's frame, the goal is not, so large divergence
+    can bring a hazard down right on top of it.
+    """
+    return math.hypot(hazard_xy[0] - goal_xy[0], hazard_xy[1] - goal_xy[1]) < clearance_m
+
+
 class FlipRecoveryNode(Node):
     def __init__(self):
         super().__init__("regolith_flip_recovery")
@@ -134,6 +154,16 @@ class FlipRecoveryNode(Node):
         # wedges (it is in front - that is the direction it was pushing).
         self.declare_parameter("hazard_lead_m", 0.8)
         self.declare_parameter("publish_hazards", True)
+        # Keep-out zones are marked in the ESTIMATOR's frame (see _mark_hazard),
+        # while the mission goal is a fixed world-frame point that never moves
+        # with the estimate. If divergence grows large enough that the two
+        # coincide, a hazard can land on the goal's own cell and wall it off
+        # permanently - a real, observed failure (PROGRESS.md, seed 55: 17.94 m
+        # divergence, `planner_node` declaring the actual goal cell lethal
+        # forever). costmap_node's own `hazard_radius_m` defaults to 1.2 m; this
+        # clearance needs to exceed that by more than a rounding margin, so it
+        # is set independently rather than duplicated from the other package.
+        self.declare_parameter("hazard_goal_clearance_m", 1.5)
         # Second trigger, from wheel_slip_node's onboard detector. The
         # ground-truth trigger above needs the rover to be nearly stationary
         # (< stuck_min_speed_mps); a rover scrubbing slowly against a boulder
@@ -448,16 +478,47 @@ class FlipRecoveryNode(Node):
         relative to the path being planned even if the estimate has drifted.
         Marking the true world position instead would put the keep-out zone
         somewhere the planner's own path never goes.
+
+        That choice has a failure mode of its own: the goal is a fixed
+        world-frame point that does not drift with the estimate, so if
+        divergence grows large enough, the estimator's frame can bring a
+        hazard down right on top of the goal's own cell - walling it off
+        forever, not because anything is actually there, but because the
+        rover's belief of "here" and the goal's real location have converged
+        by coincidence of drift. Observed directly (PROGRESS.md, seed 55):
+        17.94 m of divergence, and `planner_node` refusing the real goal as
+        lethal for the rest of the run. Skipping the mark when it would land
+        this close to the active goal is a strictly local fix for that one
+        collision - it does nothing about the divergence itself, and a hazard
+        skipped this way is a real obstacle left unmarked, traded deliberately
+        against permanently blocking the one cell the whole mission is
+        driving toward.
         """
         if not self.get_parameter("publish_hazards").value or self._estimated_pose is None:
             return
         lead = self.get_parameter("hazard_lead_m").value
         _, _, yaw = _roll_pitch_yaw(self._estimated_pose.orientation)
+        estimated_xy = (self._estimated_pose.position.x, self._estimated_pose.position.y)
+        hazard_xy = hazard_point_xy(estimated_xy, yaw, lead)
+
+        if self._last_goal is not None:
+            goal_xy = (self._last_goal.pose.position.x, self._last_goal.pose.position.y)
+            clearance = self.get_parameter("hazard_goal_clearance_m").value
+            if hazard_too_close_to_goal(hazard_xy, goal_xy, clearance):
+                self.get_logger().warn(
+                    f"Skipping hazard mark at ({hazard_xy[0]:.2f}, {hazard_xy[1]:.2f}) - "
+                    f"within {clearance:.1f} m of the active goal "
+                    f"({goal_xy[0]:.2f}, {goal_xy[1]:.2f}). Marking it would risk walling "
+                    "off the goal itself, most likely from EKF divergence rather than a "
+                    "real obstacle there - see _mark_hazard's docstring."
+                )
+                return
+
         point = PointStamped()
         point.header.stamp = self.get_clock().now().to_msg()
         point.header.frame_id = "odom"
-        point.point.x = self._estimated_pose.position.x + lead * math.cos(yaw)
-        point.point.y = self._estimated_pose.position.y + lead * math.sin(yaw)
+        point.point.x = hazard_xy[0]
+        point.point.y = hazard_xy[1]
         self._hazard_pub.publish(point)
 
     def _replan_after_escape(self) -> None:
