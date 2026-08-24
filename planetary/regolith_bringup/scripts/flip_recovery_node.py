@@ -193,16 +193,20 @@ class FlipRecoveryNode(Node):
         self._escapes_freed = 0  # escape maneuvers that produced real motion
         self._pending_escape_check = None  # (x, y, level) sampled before the maneuver
         self._slip_since = None  # onboard wheel-slip signal asserted since
-        # Measured sim-seconds per wall-second, tracked in _tick. Escape
-        # maneuvers are specified in SIM time (that is the rover's own time -
-        # 0.2 m/s for 3 s means 0.6 m of ground covered), but they have to be
-        # executed by a wall-clock sleep loop, because the ROS clock cannot
-        # advance while this node is blocking its own executor. Without this
-        # conversion every maneuver ran ~3.5x too short: this world runs at
-        # about 0.28x real time, so the old 1.0 s nudge was 0.28 s of rover
-        # time, about 6 cm of travel.
+        # Measured sim-seconds per wall-second, tracked in _tick. Historically
+        # this converted escape-maneuver durations (specified in SIM time -
+        # 0.2 m/s for 3 s means 0.6 m of ground covered) into wall-clock
+        # sleeps, because the escape used to run as a blocking loop and the
+        # ROS clock cannot advance while this node blocks its own executor.
+        # That conversion is GONE (see _escape_tick / PROGRESS.md, "the
+        # natural fix"): the escape now runs as a non-blocking state machine
+        # driven by the real sim clock, so maneuver durations are exact
+        # regardless of RTF. self._rtf is kept only as a diagnostic logged
+        # alongside each recovery, for comparison against the pre-fix history
+        # in PROGRESS.md - nothing reads it to compute a duration any more.
         self._rtf = 1.0
         self._rtf_sample = None  # (wall_t, sim_t) from the previous tick
+        self._escape = None  # in-progress escape maneuver state - see _start_escape
         self._trigger_counts = {"ground truth": 0, "wheel slip (onboard)": 0}
         self._trigger = None  # which detector fired the current recovery
         self._estimated_pose = (
@@ -226,6 +230,14 @@ class FlipRecoveryNode(Node):
         self._recovery_pub = self.create_publisher(Bool, "/recovery_active", 10)
         period = self.get_parameter("check_period_s").value
         self.create_timer(period, self._tick)
+        # Drives the in-progress escape maneuver, when there is one - see
+        # _escape_tick. Runs unconditionally at stuck_nudge_rate_hz for the
+        # node's whole life (cheap no-op while self._escape is None) rather
+        # than being created/destroyed per maneuver, so there is no dynamic
+        # timer lifecycle to get wrong. Must be faster than pure_pursuit_node's
+        # 10 Hz control loop - see _escape_tick's docstring.
+        nudge_rate_hz = self.get_parameter("stuck_nudge_rate_hz").value
+        self.create_timer(1.0 / nudge_rate_hz, self._escape_tick)
         self.get_logger().info(
             "Flip/stuck recovery armed (simulated set_pose backstop for flips, "
             "straight-line cmd_vel override for stuck-but-upright)"
@@ -251,6 +263,14 @@ class FlipRecoveryNode(Node):
 
     def _tick(self) -> None:
         self._update_rtf()
+        if self._escape is not None:
+            # An escape maneuver is in progress, driven by _escape_tick on its
+            # own timer. Skip flip/stuck detection and history recording for
+            # the duration, same as the old blocking _hold() did by freezing
+            # the whole executor - deliberately preserved here rather than
+            # letting the flip/stuck detectors run concurrently with a
+            # maneuver they didn't expect to overlap with.
+            return
         if self._pose is None:
             return
         roll, pitch, yaw = _roll_pitch_yaw(self._pose.orientation)
@@ -340,9 +360,10 @@ class FlipRecoveryNode(Node):
         """Tracks how fast simulated time runs against the wall clock.
 
         Sampled in the timer callback, where both clocks are advancing normally;
-        an exponential average smooths the jitter. Used to convert maneuver
-        durations, which are specified in sim time, into the wall-clock sleeps
-        that actually execute them.
+        an exponential average smooths the jitter. No longer used to convert
+        any duration (see _recover_stuck / _escape_tick for why) - kept purely
+        as a diagnostic, logged alongside each recovery for comparison against
+        the pre-fix history in PROGRESS.md.
         """
         wall = time.monotonic()
         sim = self._now_s()
@@ -359,30 +380,8 @@ class FlipRecoveryNode(Node):
             return  # a paused or stepping sim; keep the last sane estimate
         self._rtf = 0.9 * self._rtf + 0.1 * ratio
 
-    def _hold(self, linear_x: float, angular_z: float, duration_s: float, rate_hz: float) -> None:
-        """Publish one command for duration_s of SIMULATED time, blocking.
-
-        Blocking, not a timer callback: the override has to publish faster than
-        pure_pursuit_node's 10 Hz control loop for the whole window, or gz-sim
-        just sees whatever pure_pursuit published last. _set_pose (used by the
-        flip path) already blocks the executor for up to 6 s, so this is
-        consistent with the node's existing style.
-
-        Because the executor is blocked, the ROS clock cannot advance here - so
-        the sim-time duration is converted to wall time with the real-time
-        factor measured in _update_rtf rather than read from the clock.
-        """
-        cmd = Twist()
-        cmd.linear.x = linear_x
-        cmd.angular.z = angular_z
-        wall_duration = duration_s / max(self._rtf, 0.02)
-        deadline = time.monotonic() + wall_duration
-        while time.monotonic() < deadline:
-            self._cmd_pub.publish(cmd)
-            time.sleep(1.0 / rate_hz)
-
     def _recover_stuck(self) -> None:
-        """Escalating escape maneuver: reverse, turn away, mark the spot, replan.
+        """Kick off an escalating escape maneuver: reverse, turn away, mark the spot, replan.
 
         The previous recovery was a 1.0 s straight-line forward nudge. Measured
         over the res40 acceptance runs it fired 64 times and freed the rover
@@ -406,9 +405,28 @@ class FlipRecoveryNode(Node):
         Each consecutive event (inside stuck_relapse_window_s) escalates the
         reverse and turn durations, because a wedge that survives one attempt
         needs a bigger disengagement, not the same one again.
+
+        This method only sets up self._escape and returns - it does not block.
+        The maneuver itself is driven by _escape_tick, on its own timer, one
+        state (reverse, then turn) at a time, checked against the real sim
+        clock. See PROGRESS.md ("the natural fix") for why: the previous
+        version blocked this node's executor for the maneuver's duration and
+        converted the sim-time duration into a wall-clock sleep using an
+        exponentially-smoothed RTF estimate sampled before the block started,
+        because the ROS clock cannot advance while an executor is blocked.
+        That estimate is a poor proxy for the live RTF during the blocked
+        window itself, and measurement (PROGRESS.md, seeds 7/55/123, 35+ runs)
+        traced a real, reproducible run-to-run bifurcation in escape outcomes
+        to timing sensitivity introduced by exactly this mechanism - among
+        other candidates not ruled out. Driving the maneuver off the real sim
+        clock instead removes RTF-estimation error as a contributor entirely;
+        it does not by itself prove RTF-estimation error was the dominant
+        contributor (the rigorous decision-point check in PROGRESS.md found a
+        single RTF sample does not cleanly predict which attractor a run falls
+        into), so the paired-campaign validation this change should get before
+        being trusted is the next step, not optional.
         """
         level = self._stuck_consecutive
-        rate_hz = self.get_parameter("stuck_nudge_rate_hz").value
         reverse_s = min(
             self.get_parameter("escape_reverse_s").value * (2**level),
             self.get_parameter("escape_max_reverse_s").value,
@@ -423,52 +441,94 @@ class FlipRecoveryNode(Node):
 
         start_xy = (self._pose.position.x, self._pose.position.y) if self._pose else None
         self._mark_hazard()
-
         self._set_recovery_active(True)
-        try:
-            self._hold(-reverse_speed, 0.0, reverse_s, rate_hz)
-            self._hold(0.0, turn_sign * turn_rate, turn_s, rate_hz)
-            self._stop()
-        finally:
-            self._set_recovery_active(False)
 
+        t0 = self._now_s()
+        self._escape = {
+            "state": "reverse",
+            "deadline": t0 + reverse_s,
+            "level": level,
+            "start_xy": start_xy,
+            "reverse_speed": reverse_speed,
+            "reverse_s": reverse_s,
+            "turn_rate": turn_rate,
+            "turn_s": turn_s,
+            "turn_sign": turn_sign,
+        }
+
+    def _escape_tick(self) -> None:
+        """Advance the in-progress escape maneuver by one publish, if there is one.
+
+        Runs at stuck_nudge_rate_hz (default 30 Hz) unconditionally - see
+        __init__. Has to publish faster than pure_pursuit_node's 10 Hz control
+        loop for the whole maneuver, or gz-sim just sees whatever pure_pursuit
+        published last - muting pure_pursuit via /recovery_active is not the
+        same as having control of /cmd_vel (see the module docstring, "the
+        follower is muted outright for the duration"), which is why this still
+        out-publishes it rather than relying on the mute alone. Each state's
+        deadline is a real sim timestamp (self._now_s()), not a wall-clock
+        one, so the maneuver's actual sim-time duration is exact regardless of
+        how fast or slow the sim is currently running relative to wall clock.
+        """
+        e = self._escape
+        if e is None:
+            return
+        t = self._now_s()
+        cmd = Twist()
+        if e["state"] == "reverse":
+            cmd.linear.x = -e["reverse_speed"]
+            self._cmd_pub.publish(cmd)
+            if t >= e["deadline"]:
+                e["state"] = "turn"
+                e["deadline"] = t + e["turn_s"]
+            return
+        if e["state"] == "turn":
+            cmd.angular.z = e["turn_sign"] * e["turn_rate"]
+            self._cmd_pub.publish(cmd)
+            if t >= e["deadline"]:
+                self._finish_escape(e, t)
+            return
+
+    def _finish_escape(self, e: dict, t_now: float) -> None:
+        """Stop, log, replan, and re-arm detection once an escape maneuver ends."""
+        self._stop()
+        self._set_recovery_active(False)
         self._stuck_resets += 1
         self.get_logger().warn(
-            f"STUCK RECOVERY #{self._stuck_resets} (escalation level {level}, triggered by "
+            f"STUCK RECOVERY #{self._stuck_resets} (escalation level {e['level']}, triggered by "
             f"{self._trigger}; {self._trigger_counts['ground truth']} ground-truth / "
             f"{self._trigger_counts['wheel slip (onboard)']} onboard triggers so far). "
             f"Escape maneuver: reversed "
-            f"{reverse_speed:.2f} m/s for {reverse_s:.1f}s, then turned "
-            f"{'left' if turn_sign > 0 else 'right'} at {turn_rate:.2f} rad/s for {turn_s:.1f}s "
-            f"(sim time, at a measured {self._rtf:.2f}x real time). "
+            f"{e['reverse_speed']:.2f} m/s for {e['reverse_s']:.1f}s, then turned "
+            f"{'left' if e['turn_sign'] > 0 else 'right'} at {e['turn_rate']:.2f} rad/s for "
+            f"{e['turn_s']:.1f}s (sim time, exact - driven by the sim clock directly, not an "
+            f"RTF-estimated wall-clock sleep; RTF over this window measured {self._rtf:.2f}x "
+            "real time, logged for comparison only). "
             "A real rover's FDIR could do the same - this is not a simulated teleport."
         )
 
         self._replan_after_escape()
-        t_now = self._now_s()
         self._stuck_since = None
-        self._prev_tick_pose = None  # the override moved the rover; don't measure speed across it
+        self._prev_tick_pose = None  # the maneuver moved the rover; don't measure speed across it
         self._stuck_cooldown_until = t_now + self.get_parameter("stuck_cooldown_s").value
+        start_xy = e["start_xy"]
         if start_xy is not None:
             # Did the maneuver actually move the rover? This is the number the
-            # old recovery never reported about itself.
+            # pre-escape-maneuver recovery never reported about itself.
             #
             # Deferred by escape_check_delay_s rather than checked on the next
-            # tick. /ground_truth/pose messages queue up during the blocking
-            # maneuver, and the timer callback can win the executor race before
-            # any of them are processed - so an immediate check reads a pose
-            # from BEFORE the maneuver and reports 0.00 m. That happened: the
+            # tick, as a settling margin - now more of a belt-and-braces margin
+            # than a hard requirement: the old blocking version could queue up
+            # /ground_truth/pose messages for the whole maneuver and read a
+            # stale pre-maneuver pose on an immediate check (that happened: the
             # oracle run logged "STILL WEDGED, moved 0.00 m" for maneuvers the
             # acceptance harness's independent trace shows moving the rover
-            # ~1.9 m. Log-only, but it under-reported the recovery's own
-            # success rate, which is exactly the kind of number this project
-            # must not get wrong in its own favour OR against it.
-            # The timestamp is deliberately None, not t_now: the ROS clock does
-            # not advance while this node blocks its own executor, so t_now here
-            # is the PRE-maneuver sim time and any delay measured from it would
-            # already look satisfied on the first tick. The first tick after the
-            # maneuver stamps it with a clock that has caught up.
-            self._pending_escape_check = (start_xy[0], start_xy[1], level, None)
+            # ~1.9 m). The non-blocking maneuver never stops the executor, so
+            # pose callbacks are processed throughout - but the delay is kept
+            # rather than removed, since it costs little and this is exactly
+            # the kind of number this project must not get wrong either way.
+            self._pending_escape_check = (start_xy[0], start_xy[1], e["level"], None)
+        self._escape = None
 
     def _mark_hazard(self) -> None:
         """Publish the wedge point so the costmap can make it a keep-out zone.
