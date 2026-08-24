@@ -60,10 +60,13 @@ def test_hazard_far_from_goal_is_not_too_close():
 
 
 def test_hazard_on_top_of_goal_is_too_close():
-    """The failure mode this guard exists for: severe divergence puts the
-    estimated pose (and so the hazard marked ahead of it) within a metre of
-    the real goal - reproducing the seed 55 numbers directly (EKF estimate
-    (-59.599, 19.588) against goal (-60.58, 19.42), about 1.0 m apart)."""
+    """The failure mode this guard exists for.
+
+    Severe divergence puts the estimated pose (and so the hazard marked
+    ahead of it) within a metre of the real goal - reproducing the seed 55
+    numbers directly (EKF estimate (-59.599, 19.588) against goal
+    (-60.58, 19.42), about 1.0 m apart).
+    """
     hazard_xy = (-59.599, 19.588)
     goal_xy = (-60.58, 19.42)
     assert hazard_too_close_to_goal(hazard_xy, goal_xy, clearance_m=1.5)

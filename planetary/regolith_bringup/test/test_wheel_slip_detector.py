@@ -57,23 +57,26 @@ def feed(detector, duration_s, vx, wz_wheel, wz_gyro, attitude_rate=0.0, rate_hz
 
 
 def test_symmetric_wedge_without_commanded_turn_is_a_known_undetected_gap():
-    """Wheels claiming 0.2 m/s, zero commanded turn, zero attitude change: a rover
-    wedged symmetrically enough to produce no net torque - and also, byte-for-byte,
-    a rover driving dead straight at 0.2 m/s across flat, uniform ground. Onboard
-    wheel odometry + IMU cannot tell these apart: neither of signature 2's inputs
-    (attitude span, gyro RMS) observes translation at all, so no threshold on them
-    separates the cases.
+    """Wheels claiming 0.2 m/s with zero commanded turn is a known undetected gap.
 
-    This used to be flagged (signature 2, "a rigidly still body"), on the theory a
-    symmetric wedge was more likely than 15 s of dead-straight driving over smooth
-    ground. That theory was live-tested on seed 42 (PROGRESS.md, "Root-caused: the
-    benign-ground traction stall was never a stall") and produced a confirmed false
-    positive - a genuinely moving rover flagged as wedged, its real wheel odometry
-    fed to the EKF as a zero-velocity update - against zero true positives for
-    signature 2 across two calibration campaigns (7,755 + 968 windows). Retired.
-    This case is now silently undetected, which is the honest state of the
-    tradeoff, not an oversight: real coverage would need a signal that observes
-    translation, which this detector does not have.
+    Zero attitude change there is byte-for-byte ambiguous: it is both a rover
+    wedged symmetrically enough to produce no net torque, and a rover driving
+    dead straight at 0.2 m/s across flat, uniform ground. Onboard wheel
+    odometry + IMU cannot tell these apart: neither of signature 2's inputs
+    (attitude span, gyro RMS) observes translation at all, so no threshold on
+    them separates the cases.
+
+    This used to be flagged (signature 2, "a rigidly still body"), on the
+    theory a symmetric wedge was more likely than 15 s of dead-straight
+    driving over smooth ground. That theory was live-tested on seed 42
+    (PROGRESS.md, "Root-caused: the benign-ground traction stall was never a
+    stall") and produced a confirmed false positive - a genuinely moving
+    rover flagged as wedged, its real wheel odometry fed to the EKF as a
+    zero-velocity update - against zero true positives for signature 2
+    across two calibration campaigns (7,755 + 968 windows). Retired. This
+    case is now silently undetected, which is the honest state of the
+    tradeoff, not an oversight: real coverage would need a signal that
+    observes translation, which this detector does not have.
     """
     detector = SlipDetector()
     feed(detector, 20.0, vx=0.2, wz_wheel=0.0, wz_gyro=0.0)
@@ -81,12 +84,16 @@ def test_symmetric_wedge_without_commanded_turn_is_a_known_undetected_gap():
 
 
 def test_legacy_rigid_body_signature_lever_restores_the_retired_behaviour():
-    """The A/B lever (`legacy_rigid_body_signature`) exists so a before/after campaign
-    can compare the two behaviours from the same build/commit, same discipline as
-    goal_tolerance_m's campaign. This pins that the lever actually does what the
-    campaign needs it to do: off (default) matches the current, fixed behaviour
-    (test_symmetric_wedge_without_commanded_turn_is_a_known_undetected_gap); on
-    restores the exact pre-fix false positive."""
+    """The A/B lever restores the retired signature-2 behaviour when enabled.
+
+    `legacy_rigid_body_signature` exists so a before/after campaign can
+    compare the two behaviours from the same build/commit, same discipline
+    as goal_tolerance_m's campaign. This pins that the lever actually does
+    what the campaign needs it to do: off (default) matches the current,
+    fixed behaviour
+    (test_symmetric_wedge_without_commanded_turn_is_a_known_undetected_gap);
+    on restores the exact pre-fix false positive.
+    """
     fixed = SlipDetector(legacy_rigid_body_signature=False)
     feed(fixed, 20.0, vx=0.2, wz_wheel=0.0, wz_gyro=0.0)
     assert not fixed.slipping()
@@ -97,14 +104,16 @@ def test_legacy_rigid_body_signature_lever_restores_the_retired_behaviour():
 
 
 def test_driving_rover_is_not_flagged():
-    """A driving rover with no commanded turn is never flagged, regardless of how
-    much the terrain tilts the body as it goes - signature 1 needs a commanded
-    rotation to disagree with (there is none here, wz_wheel=0.0) and signature 2 is
-    retired (see test_symmetric_wedge_without_commanded_turn_is_a_known_undetected_gap).
-    Kept at the historically hardest attitude-span case in the recording (0.002 rad/s
-    over 15 s = 0.030 rad, the smallest genuine-driving span measured across 4,700
-    windows) as a regression marker, even though that margin no longer decides the
-    outcome.
+    """A driving rover with no commanded turn is never flagged.
+
+    This holds regardless of how much the terrain tilts the body as it goes
+    - signature 1 needs a commanded rotation to disagree with (there is none
+    here, wz_wheel=0.0) and signature 2 is retired (see
+    test_symmetric_wedge_without_commanded_turn_is_a_known_undetected_gap).
+    Kept at the historically hardest attitude-span case in the recording
+    (0.002 rad/s over 15 s = 0.030 rad, the smallest genuine-driving span
+    measured across 4,700 windows) as a regression marker, even though that
+    margin no longer decides the outcome.
     """
     detector = SlipDetector()
     feed(detector, 20.0, vx=0.2, wz_wheel=0.0, wz_gyro=0.01, attitude_rate=0.002)
@@ -144,12 +153,15 @@ def test_short_history_never_declares_slip():
 
 
 def test_yaw_wrap_is_not_mistaken_for_a_large_attitude_change():
-    """Crossing +-pi must not look like a 6 rad attitude change - the detector unwraps
-    yaw. `attitude_span_rad` is the value `_body_is_rigid` (retired - see
-    test_symmetric_wedge_without_commanded_turn_is_a_known_undetected_gap) used to act
-    on; it is asserted directly here rather than through `slipping()`, since
-    `slipping()` no longer depends on it at all (wz_wheel=0.0 keeps signature 1 out of
-    this too)."""
+    """Crossing +-pi must not look like a 6 rad attitude change.
+
+    The detector unwraps yaw. `attitude_span_rad` is the value
+    `_body_is_rigid` (retired - see
+    test_symmetric_wedge_without_commanded_turn_is_a_known_undetected_gap)
+    used to act on; it is asserted directly here rather than through
+    `slipping()`, since `slipping()` no longer depends on it at all
+    (wz_wheel=0.0 keeps signature 1 out of this too).
+    """
     detector = SlipDetector()
     for i in range(1, 201):
         t = i / 10.0
@@ -252,15 +264,18 @@ def test_wheels_claiming_little_rotation_cannot_trigger_the_rotation_test():
 
 @pytest.mark.parametrize("window_s", [3.0, 15.0])
 def test_window_length_no_longer_changes_the_no_commanded_turn_verdict(window_s):
-    """This used to be the measured reason the window is 15 s and not 3 s: a rover
-    driving straight across smooth ground tilts slowly, so a short window's attitude
-    span looked "rigid" (signature 2) when a long window's didn't. That was entirely
-    a signature-2 argument, and signature 2 is retired (see
-    test_symmetric_wedge_without_commanded_turn_is_a_known_undetected_gap) - with no
-    commanded turn (wz_wheel=0.0) neither signature can fire regardless of window
-    length, which this pins directly. The window still matters for signature 1 (needs
-    time to accumulate a stable rotation ratio - see the module docstring), just not
-    for this case.
+    """The window length no longer changes the no-commanded-turn verdict.
+
+    This used to be the measured reason the window is 15 s and not 3 s: a
+    rover driving straight across smooth ground tilts slowly, so a short
+    window's attitude span looked "rigid" (signature 2) when a long
+    window's didn't. That was entirely a signature-2 argument, and
+    signature 2 is retired (see
+    test_symmetric_wedge_without_commanded_turn_is_a_known_undetected_gap)
+    - with no commanded turn (wz_wheel=0.0) neither signature can fire
+    regardless of window length, which this pins directly. The window
+    still matters for signature 1 (needs time to accumulate a stable
+    rotation ratio - see the module docstring), just not for this case.
     """
     smooth_drive = SlipDetector(window_s=window_s)
     feed(smooth_drive, 25.0, vx=0.2, wz_wheel=0.0, wz_gyro=0.0006, attitude_rate=0.002)
