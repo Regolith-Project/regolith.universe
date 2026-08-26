@@ -48,6 +48,7 @@
     "libacados",
     "libtensorrt",
     "lichtblick",
+    "metalness",
     "mgrid",
     "ndimage",
     "ogrid",
