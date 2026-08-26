@@ -172,6 +172,16 @@ class FlipRecoveryNode(Node):
         # the IMU cannot corroborate - so it catches the creeping case too.
         self.declare_parameter("slip_trigger_s", 5.0)
         self.declare_parameter("trigger_on_slip", True)
+        # Diagnostic only, OFF by default (spams a line up to check_period_s's
+        # rate while a stuck-candidate streak is live). Added to look INSIDE
+        # _stuck_since/_stuck_cooldown_until - see PROGRESS.md, "what's left is
+        # ... a piece of the node's own internal state this harness cannot
+        # observe at all without adding debug logging". External 10 Hz logging
+        # of GT speed and /cmd_vel already ruled out both being sustained-false
+        # at the fixed arm's second chokepoint; this looks at whether _stuck_since
+        # resets mid-streak at this node's own 5 Hz tick phase, which a 10 Hz
+        # external log phase-aligned to nothing this node controls could miss.
+        self.declare_parameter("stuck_debug", False)
 
         # ~180 s of upright trail at check_period_s, so progressive backoff can
         # step back to a genuinely different location rather than the same lip.
@@ -321,17 +331,41 @@ class FlipRecoveryNode(Node):
             self._fire_recovery(t, "wheel slip (onboard)")
             return
 
+        debug = self.get_parameter("stuck_debug").value
+
         if commanded_speed < min_commanded or gt_speed >= min_speed:
+            if debug and self._stuck_since is not None:
+                # A streak was live and just got cut - the case PROGRESS.md
+                # flagged as invisible to a 10 Hz external log: this node
+                # samples gt_speed/commanded_speed at its own 5 Hz tick phase,
+                # so a reset can land between two external samples that both
+                # look continuous.
+                reason = "commanded<min" if commanded_speed < min_commanded else "gt_speed>=min"
+                self.get_logger().info(
+                    f"[stuck_debug] streak RESET after {t - self._stuck_since:.2f}s "
+                    f"({reason}: gt_speed={gt_speed:.4f} commanded={commanded_speed:.4f} "
+                    f"dt={dt:.3f} t={t:.2f})"
+                )
             self._stuck_since = None
             return
 
         if self._stuck_cooldown_until is not None and t < self._stuck_cooldown_until:
             return
         if self._stuck_since is None:
+            if debug:
+                self.get_logger().info(
+                    f"[stuck_debug] streak START (gt_speed={gt_speed:.4f} "
+                    f"commanded={commanded_speed:.4f} dt={dt:.3f} t={t:.2f})"
+                )
             self._stuck_since = t
             return
         if (t - self._stuck_since) < self.get_parameter("stuck_debounce_s").value:
             return
+
+        if debug:
+            self.get_logger().info(
+                f"[stuck_debug] streak FIRED after {t - self._stuck_since:.2f}s (t={t:.2f})"
+            )
 
         self._fire_recovery(t, "ground truth")
 

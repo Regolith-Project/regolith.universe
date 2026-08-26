@@ -426,11 +426,19 @@ def _generate_and_launch(context, *args, **kwargs):
     # tilted-slab terrain collision makes this rare, not impossible), teleport it
     # upright to its last known-good pose via gz set_pose rather than leaving the
     # demo dead. Explicitly a simulated self-right - see flip_recovery_node.py.
+    stuck_debug = LaunchConfiguration("stuck_debug").perform(context).lower() == "true"
     flip_recovery_node = Node(
         package="regolith_bringup",
         executable="flip_recovery_node.py",
         output="screen",
-        parameters=[{"use_sim_time": True, "world_name": WORLD_NAME, "model_name": ROVER_NAME}],
+        parameters=[
+            {
+                "use_sim_time": True,
+                "world_name": WORLD_NAME,
+                "model_name": ROVER_NAME,
+                "stuck_debug": stuck_debug,
+            }
+        ],
     )
 
     tour_mission = Node(
@@ -589,6 +597,15 @@ def generate_launch_description() -> LaunchDescription:
                 "'Root-caused: the benign-ground traction stall was never a stall'. Default "
                 "false matches the shipped, fixed behaviour; true is for a same-build "
                 "before/after comparison campaign only, not a setting to ship on",
+            ),
+            DeclareLaunchArgument(
+                "stuck_debug",
+                default_value="false",
+                description="DIAGNOSTIC ONLY. flip_recovery_node logs every _stuck_since "
+                "streak start/reset/fire at its own 5 Hz tick, with the instantaneous "
+                "gt_speed/commanded_speed that caused it. For investigating the fixed-arm "
+                "chokepoint split (PROGRESS.md) - not a setting to run campaigns with by "
+                "default, it is verbose",
             ),
             DeclareLaunchArgument(
                 "headless",
