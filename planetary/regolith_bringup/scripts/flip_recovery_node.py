@@ -290,13 +290,21 @@ class FlipRecoveryNode(Node):
             if msg.data:
                 self.get_logger().info(f"[stuck_debug] slip ASSERTED (t={t:.2f})")
             else:
-                held = t - self._slip_since if self._slip_since is not None else float("nan")
                 # /wheel_slip is edge-published, so a CLEARED line that never
                 # reached slip_trigger_s is a slip near-miss: the competitor
-                # detector came up and went away without firing.
+                # detector came up and went away without firing. _slip_since
+                # being None here is not a missing measurement - _fire_recovery
+                # clears it, so it means this assertion had already been spent
+                # on a trigger.
+                bar = self.get_parameter("slip_trigger_s").value
+                held = (
+                    f"{t - self._slip_since:.2f}s"
+                    if self._slip_since is not None
+                    else "already consumed by a trigger"
+                )
                 self.get_logger().info(
-                    f"[stuck_debug] slip CLEARED after {held:.2f}s "
-                    f"(trigger bar: {self.get_parameter('slip_trigger_s').value:.2f}s, t={t:.2f})"
+                    f"[stuck_debug] slip CLEARED after {held} "
+                    f"(trigger bar: {bar:.2f}s, t={t:.2f})"
                 )
         self._slip_since = t if msg.data else None
 
