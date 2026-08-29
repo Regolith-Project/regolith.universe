@@ -181,6 +181,16 @@ class FlipRecoveryNode(Node):
         # at the fixed arm's second chokepoint; this looks at whether _stuck_since
         # resets mid-streak at this node's own 5 Hz tick phase, which a 10 Hz
         # external log phase-aligned to nothing this node controls could miss.
+        #
+        # It also covers the wheel-slip path and keeps a SHADOW streak, both
+        # added after the first instrumented rep (PROGRESS.md, seed7_fixed_rep15)
+        # showed the ground-truth streak's fate is unobservable whenever slip
+        # preempts it: _check_stuck tests _slip_triggered FIRST and returns, so
+        # _stuck_since is never even updated on those ticks. The shadow streak
+        # tracks the raw ground-truth CONDITION continuously - ignoring slip,
+        # cooldown and the fired/not-fired distinction - so a rep resolved by
+        # slip still says how close the oracle came, and how often noise on the
+        # threshold cut it. Diagnostic only: nothing here feeds a decision.
         self.declare_parameter("stuck_debug", False)
 
         # ~180 s of upright trail at check_period_s, so progressive backoff can
@@ -203,6 +213,12 @@ class FlipRecoveryNode(Node):
         self._escapes_freed = 0  # escape maneuvers that produced real motion
         self._pending_escape_check = None  # (x, y, level) sampled before the maneuver
         self._slip_since = None  # onboard wheel-slip signal asserted since
+        # stuck_debug bookkeeping only - see the stuck_debug parameter above.
+        self._shadow_stuck_since = None
+        self._shadow_last_t = None
+        self._shadow_resets = 0
+        self._shadow_longest_s = 0.0
+        self._shadow_announced = False
         # Measured sim-seconds per wall-second, tracked in _tick. Historically
         # this converted escape-maneuver durations (specified in SIM time -
         # 0.2 m/s for 3 s means 0.6 m of ground covered) into wall-clock
@@ -269,7 +285,20 @@ class FlipRecoveryNode(Node):
         self._last_goal = msg
 
     def _on_slip(self, msg: Bool) -> None:
-        self._slip_since = self._now_s() if msg.data else None
+        t = self._now_s()
+        if self.get_parameter("stuck_debug").value:
+            if msg.data:
+                self.get_logger().info(f"[stuck_debug] slip ASSERTED (t={t:.2f})")
+            else:
+                held = t - self._slip_since if self._slip_since is not None else float("nan")
+                # /wheel_slip is edge-published, so a CLEARED line that never
+                # reached slip_trigger_s is a slip near-miss: the competitor
+                # detector came up and went away without firing.
+                self.get_logger().info(
+                    f"[stuck_debug] slip CLEARED after {held:.2f}s "
+                    f"(trigger bar: {self.get_parameter('slip_trigger_s').value:.2f}s, t={t:.2f})"
+                )
+        self._slip_since = t if msg.data else None
 
     def _tick(self) -> None:
         self._update_rtf()
@@ -327,11 +356,32 @@ class FlipRecoveryNode(Node):
         min_commanded = self.get_parameter("stuck_min_commanded_mps").value
         min_speed = self.get_parameter("stuck_min_speed_mps").value
 
+        debug = self.get_parameter("stuck_debug").value
+        if debug:
+            self._track_shadow_streak(t, gt_speed, commanded_speed, min_speed, min_commanded)
+
         if self._slip_triggered(t):
+            if debug:
+                # The blind spot rep15 exposed: this return skips all
+                # _stuck_since bookkeeping below, so without these two ages the
+                # log cannot say whether the oracle was one tick from firing or
+                # nowhere near it when slip took the event.
+                live = (
+                    f"{t - self._stuck_since:.2f}s" if self._stuck_since is not None else "none"
+                )
+                shadow = (
+                    f"{t - self._shadow_stuck_since:.2f}s"
+                    if self._shadow_stuck_since is not None
+                    else "none"
+                )
+                self.get_logger().info(
+                    f"[stuck_debug] slip PREEMPTED the ground-truth path after "
+                    f"{t - self._slip_since:.2f}s asserted (live streak={live} "
+                    f"shadow streak={shadow} gt_speed={gt_speed:.4f} "
+                    f"commanded={commanded_speed:.4f} t={t:.2f})"
+                )
             self._fire_recovery(t, "wheel slip (onboard)")
             return
-
-        debug = self.get_parameter("stuck_debug").value
 
         if commanded_speed < min_commanded or gt_speed >= min_speed:
             if debug and self._stuck_since is not None:
@@ -368,6 +418,77 @@ class FlipRecoveryNode(Node):
             )
 
         self._fire_recovery(t, "ground truth")
+
+    def _track_shadow_streak(
+        self,
+        t: float,
+        gt_speed: float,
+        commanded_speed: float,
+        min_speed: float,
+        min_commanded: float,
+    ) -> None:
+        """stuck_debug only: follows the ground-truth condition, decision-free.
+
+        The real _stuck_since answers "did the node fire", and three things can
+        stop it short of that answer: slip preempting the whole check, the
+        post-event cooldown, and the escape maneuver skipping _check_stuck
+        entirely. This tracks the raw condition through all three, so a run's
+        log says how close the oracle came and how often it was cut - the
+        measurement PROGRESS.md's noise-floor reading needs and rep15 could not
+        produce. It writes nothing any decision reads.
+        """
+        gap = self.get_parameter("check_period_s").value * 3.0
+        if self._shadow_last_t is not None and (t - self._shadow_last_t) > gap:
+            # A flip, an escape maneuver, or a stalled executor: ticks stopped
+            # arriving, so continuity across the gap is not established and a
+            # streak spanning it would be an artefact.
+            if self._shadow_stuck_since is not None:
+                self.get_logger().info(
+                    f"[stuck_debug] shadow streak DROPPED at {t - self._shadow_stuck_since:.2f}s "
+                    f"(tick gap of {t - self._shadow_last_t:.2f}s, t={t:.2f})"
+                )
+                self._shadow_stuck_since = None
+        self._shadow_last_t = t
+
+        holds = commanded_speed >= min_commanded and gt_speed < min_speed
+        if not holds:
+            if self._shadow_stuck_since is not None:
+                held = t - self._shadow_stuck_since
+                self._shadow_resets += 1
+                self._shadow_longest_s = max(self._shadow_longest_s, held)
+                reason = "commanded<min" if commanded_speed < min_commanded else "gt_speed>=min"
+                self.get_logger().info(
+                    f"[stuck_debug] shadow streak CUT at {held:.2f}s "
+                    f"({reason}: gt_speed={gt_speed:.4f} commanded={commanded_speed:.4f} "
+                    f"t={t:.2f}; {self._shadow_resets} cuts so far, "
+                    f"longest {self._shadow_longest_s:.2f}s)"
+                )
+                self._shadow_stuck_since = None
+            return
+
+        if self._shadow_stuck_since is None:
+            self._shadow_stuck_since = t
+            self._shadow_announced = False
+            self.get_logger().info(
+                f"[stuck_debug] shadow streak START (gt_speed={gt_speed:.4f} "
+                f"commanded={commanded_speed:.4f} t={t:.2f})"
+            )
+            return
+
+        held = t - self._shadow_stuck_since
+        if held >= self.get_parameter("stuck_debounce_s").value:
+            self._shadow_longest_s = max(self._shadow_longest_s, held)
+            if not self._shadow_announced:
+                # Logged once per streak, not per tick: the interesting fact is
+                # that the condition CLEARED the bar, which - if the live path
+                # did not fire on the same streak - places the difference in
+                # cooldown or slip preemption, not in the terrain.
+                self._shadow_announced = True
+                bar = self.get_parameter("stuck_debounce_s").value
+                self.get_logger().info(
+                    f"[stuck_debug] shadow streak PASSED the {bar:.2f}s bar "
+                    f"(started t={self._shadow_stuck_since:.2f}, t={t:.2f})"
+                )
 
     def _slip_triggered(self, t: float) -> bool:
         if not self.get_parameter("trigger_on_slip").value or self._slip_since is None:
@@ -540,6 +661,12 @@ class FlipRecoveryNode(Node):
             "real time, logged for comparison only). "
             "A real rover's FDIR could do the same - this is not a simulated teleport."
         )
+        if self.get_parameter("stuck_debug").value:
+            self.get_logger().info(
+                f"[stuck_debug] shadow streak tally at recovery #{self._stuck_resets}: "
+                f"{self._shadow_resets} cuts, longest {self._shadow_longest_s:.2f}s "
+                f"(bar {self.get_parameter('stuck_debounce_s').value:.2f}s)"
+            )
 
         self._replan_after_escape()
         self._stuck_since = None
