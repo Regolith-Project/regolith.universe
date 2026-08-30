@@ -362,13 +362,37 @@ def _generate_and_launch(context, *args, **kwargs):
         )
 
     oracle = LaunchConfiguration("localization_oracle").perform(context).lower() == "true"
-    ekf_config_name = "/config/ekf_oracle.yaml" if oracle else "/config/ekf.yaml"
+    terrain_relative = (
+        LaunchConfiguration("terrain_relative").perform(context).lower() == "true"
+    )
+    if oracle and terrain_relative:
+        raise RuntimeError(
+            "localization_oracle and terrain_relative both publish /absolute_reference/pose "
+            "and cannot run together. The oracle reads ground truth (experiments only); "
+            "terrain_relative earns the same fix from the IMU and the a-priori DEM."
+        )
+    if oracle:
+        ekf_config_name = "/config/ekf_oracle.yaml"
+    elif terrain_relative:
+        ekf_config_name = "/config/ekf_terrain_relative.yaml"
+    else:
+        ekf_config_name = "/config/ekf.yaml"
     ekf_config = FindPackageShare("regolith_bringup").find("regolith_bringup") + ekf_config_name
     if oracle:
         print(
             "[hello_moon.launch] LOCALIZATION ORACLE ENABLED - the EKF is being fed "
             "ground-truth position. This is an experiment; results are not milestone "
             "results. See PROGRESS.md.",
+            flush=True,
+        )
+    if terrain_relative:
+        print(
+            "[hello_moon.launch] TERRAIN-RELATIVE NAVIGATION ENABLED - the EKF is fused with "
+            "an absolute position fix matched from IMU attitude against the a-priori DEM. No "
+            "ground truth is read, so runs with this on ARE milestone results. Replayed "
+            "through 25 recorded runs it cuts final EKF error from 2.97 m to 0.71 m median, "
+            "but a replay is not a run - see PROGRESS.md before reading anything into a "
+            "single result.",
             flush=True,
         )
     ekf_node = Node(
@@ -385,6 +409,17 @@ def _generate_and_launch(context, *args, **kwargs):
         output="screen",
         parameters=[{"use_sim_time": True}],
         condition=IfCondition(LaunchConfiguration("localization_oracle")),
+    )
+
+    # Terrain-relative navigation: the earned version of the relay above. Reads
+    # the same a-priori terrain manifest the costmap does - on a real mission,
+    # an orbital DEM - and matches IMU attitude against it for an absolute fix.
+    terrain_relative_node = Node(
+        package="regolith_bringup",
+        executable="terrain_relative_node.py",
+        output="screen",
+        parameters=[{"manifest_path": str(manifest_path), "use_sim_time": True}],
+        condition=IfCondition(LaunchConfiguration("terrain_relative")),
     )
 
     costmap_node = Node(
@@ -507,6 +542,10 @@ def _generate_and_launch(context, *args, **kwargs):
             # If VO dies mid-run the rover silently reverts to the sensor suite that
             # scored 0/3, and the run would still report a number. Tear down instead.
             *([("visual_odometry_node", visual_odometry_node)] if use_visual_odometry else []),
+            # Same reasoning as VO above: if the terrain matcher dies the run
+            # silently continues on dead reckoning alone and still reports a
+            # number, which would be a result attributed to the wrong stack.
+            *([("terrain_relative_node", terrain_relative_node)] if terrain_relative else []),
             ("ekf_node", ekf_node),
             ("costmap_node", costmap_node),
             ("planner_node", planner_node),
@@ -523,6 +562,7 @@ def _generate_and_launch(context, *args, **kwargs):
         bridge,
         wheel_slip_node,
         absolute_reference_relay,
+        terrain_relative_node,
         *([visual_odometry_node] if use_visual_odometry else []),
         sensor_covariance_relay,
         ekf_node,
@@ -567,6 +607,16 @@ def generate_launch_description() -> LaunchDescription:
                 "reference from ground truth, standing in for visual odometry. "
                 "Results obtained with this are not milestone results - see "
                 "absolute_reference_relay.py",
+            ),
+            DeclareLaunchArgument(
+                "terrain_relative",
+                default_value="false",
+                description="Terrain-relative navigation: an absolute x/y fix matched from IMU "
+                "attitude against the a-priori terrain DEM (terrain_relative_node.py). "
+                "Onboard sensors only, so unlike localization_oracle its results ARE "
+                "milestone results. OFF by default pending live validation: replayed "
+                "through 25 recorded runs it cuts final EKF error from 2.97 m to 0.71 m "
+                "median, but a replay is not a run. See PROGRESS.md",
             ),
             DeclareLaunchArgument(
                 "visual_odometry",

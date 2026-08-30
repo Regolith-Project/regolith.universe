@@ -1,0 +1,173 @@
+# Copyright 2026 Regolith Project contributors
+# SPDX-License-Identifier: Apache-2.0
+#
+# ekf.yaml plus a TERRAIN-RELATIVE absolute position fix (pose0), published by
+# terrain_relative_node.py. Unlike config/ekf_oracle.yaml - which fuses the same
+# topic from GROUND TRUTH and so can only ever produce experiments - this fix is
+# earned from onboard sensors: the IMU's attitude matched against the a-priori
+# terrain DEM. A result produced with this file IS a milestone result.
+#
+# It fuses x and y and NOTHING else. Terrain contour matching cannot observe
+# heading: rotate the rover in place and the slope under it is unchanged. The
+# oracle's config fuses yaw as well because ground truth knows it; this one must
+# not, and the node publishes a 1e6 covariance on yaw to say so twice.
+#
+# The variance the node publishes (position_variance, default 1.0 m^2 -> 1.0 m
+# sigma) is deliberately looser than the oracle's 0.25. That is the MEASURED
+# accuracy of the matcher over 25 recorded runs, not an aspiration - see
+# terrain_relative_node.py and PROGRESS.md. A filter told a 0.5 m sigma for a
+# 1.0 m measurement would be harmed by its own fix.
+
+ekf_filter_node:
+  ros__parameters:
+    frequency: 30.0
+    sensor_timeout: 0.2
+    two_d_mode: true
+    publish_tf: true
+    map_frame: map
+    odom_frame: odom
+    base_link_frame: base_link
+    world_frame: odom
+    use_sim_time: true
+
+    # Wheel odometry (DiffDrive dead-reckoning, bridged from Gazebo): velocity only,
+    # NOT position or absolute yaw. Skid-steer turning requires real wheel scrub
+    # against the ground, which the dead-reckoning kinematic model doesn't account
+    # for - its yaw drifts hugely under turning (measured ~3x off from ground truth
+    # after a deliberate in-place-rotation test, see PROGRESS.md M3), and since its
+    # own x/y integration already used that same bad internal yaw, the *position*
+    # output is just as corrupted as the yaw - feeding position in doesn't help even
+    # with yaw fusion disabled. Only vx/vyaw (rate measurements, not integrated
+    # against the bad yaw) go in here; the EKF integrates position itself using its
+    # own state, with absolute heading coming from the IMU instead.
+    # /odom/with_covariance, not /odom directly - see sensor_covariance_relay.py.
+    odom0: /odom/with_covariance
+    odom0_config:
+      [
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        true,
+        false,
+        false,
+        false,
+        false,
+        true,
+        false,
+        false,
+        false,
+      ]
+    odom0_differential: false
+    odom0_relative: false
+    odom0_queue_size: 10
+
+    # IMU: orientation and angular velocity only - NOT linear acceleration.
+    # Double-integrating accelerometer data for position is a well-known drift trap
+    # even on real hardware; wheel odometry's vx above is a far better position/velocity
+    # source, so acceleration isn't needed and its noise would only hurt.
+    # /imu/with_covariance, not /imu directly - see sensor_covariance_relay.py.
+    imu0: /imu/with_covariance
+    imu0_config:
+      [
+        false,
+        false,
+        false,
+        true,
+        true,
+        true,
+        false,
+        false,
+        false,
+        true,
+        true,
+        true,
+        false,
+        false,
+        false,
+      ]
+    imu0_differential: false
+    imu0_relative: false
+    imu0_remove_gravitational_acceleration: true
+    imu0_queue_size: 10
+
+    # Visual odometry: body-frame vy, and deliberately nothing else.
+    #
+    # vy is the whole point - see the header. Measured against ground truth over
+    # 130 real frame pairs from this world, VO's lateral channel is unbiased at
+    # +0.000 m/s with a standard deviation of 0.018, and the covariance the node
+    # derives per estimate from its own reprojection residual (sigma 0.020) matches
+    # that almost exactly - so the filter is being told the truth about how much to
+    # trust it.
+    #
+    # NOT vx, although the node publishes it. The same measurement found VO's
+    # forward channel biased LOW - by 35% in straight-line driving, 18% while
+    # turning, 9% in one live cruise sample - while gated wheel odometry measures
+    # forward distance to about 1%. Fusing it would inject a systematic error into
+    # the one term the existing sensors already measure well, and a filter that
+    # believes it has travelled less than it has drives past its goal. Each sensor
+    # is fused for what it is actually good at, which is the measured answer
+    # rather than the tidy one. See regolith_visual_odometry/README.md for why vy
+    # is unbiased under the very conditions that bias vx.
+    #
+    # NOT yaw rate, though VO estimates it perfectly well: the IMU's gyro
+    # already observes it better, and M4's error budget showed heading was never
+    # the problem - dead-reckoning along the IMU's heading reproduced ground
+    # truth to 3.5 m over 107 m, while the wheel-integrated heading gave 43 m.
+    # Adding a third, noisier vote on a term that is already solved would only
+    # let VO's noise into a channel that does not need it.
+    #
+    # NOT position: visual odometry is a RELATIVE sensor. Integrating its own
+    # pose and fusing that would hand the filter two independently drifting
+    # position estimates to fight over. Fusing velocity keeps each sensor to
+    # what it measures and lets the filter integrate once.
+    odom1: /vo/odom
+    odom1_config:
+      [
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        true,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+      ]
+    odom1_differential: false
+    odom1_relative: false
+    odom1_queue_size: 10
+
+    # Terrain-relative absolute position: x and y only, at roughly one fix per
+    # 10 m of travel. See the header, and terrain_relative_node.py for what the
+    # matcher measures and what it cannot.
+    pose0: /absolute_reference/pose
+    pose0_config:
+      [
+        true,
+        true,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+      ]
+    pose0_differential: false
+    pose0_relative: false
+    pose0_queue_size: 10

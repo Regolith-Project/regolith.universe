@@ -13,6 +13,7 @@
   <exec_depend>launch_ros</exec_depend>
   <exec_depend>nav_msgs</exec_depend>
   <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-pil</exec_depend>
   <exec_depend>rclpy</exec_depend>
   <exec_depend>regolith_costmap</exec_depend>
   <exec_depend>regolith_planner</exec_depend>
