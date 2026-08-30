@@ -20,9 +20,8 @@ raw accuracy, and most of this file is about them:
      against the matcher's own output.
 
 Accuracy itself is not asserted here beyond "recovers a known offset on a
-synthetic slope": the real accuracy claim (0.85 m median per fix) is a
-measurement over 25 recorded runs, not something a unit test can establish. See
-PROGRESS.md.
+synthetic slope": the real accuracy claim is a measurement over 25 recorded runs,
+not something a unit test can establish. See PROGRESS.md.
 """
 
 import importlib.util
@@ -243,3 +242,36 @@ class TestQuaternionConversion:
         q = mock.Mock(w=h, x=0.0, y=h, z=0.0)
         _, pitch, _ = trn.rpy_from_quaternion(q)
         assert pitch == pytest.approx(math.pi / 2, abs=1e-6)
+
+
+class TestShiftSamples:
+    """Publishing a fix makes the EKF jump; the buffered window has to follow it.
+
+    Without this the window straddles the jump and hands the matcher a path with
+    a step in it that the rover never drove - and a wrong-but-smooth path is
+    matched just as confidently as a right one, which is the failure mode that
+    cost a live run here (see the node's buffer comment).
+    """
+
+    SAMPLES = [
+        (1.0, 2.0, 0.5, 0.01, 0.02, 10.0),
+        (2.0, 3.0, 0.6, 0.03, 0.04, 11.0),
+    ]
+
+    def test_positions_move_by_the_correction(self):
+        out = trn.shift_samples(self.SAMPLES, 0.5, -1.5)
+        assert [(s[0], s[1]) for s in out] == [(1.5, 0.5), (2.5, 1.5)]
+
+    def test_attitude_and_distance_are_frame_independent_and_must_not_move(self):
+        out = trn.shift_samples(self.SAMPLES, 3.0, 4.0)
+        assert [s[2:] for s in out] == [s[2:] for s in self.SAMPLES]
+
+    def test_the_window_shape_is_preserved_exactly(self):
+        """A shift is rigid: every inter-sample vector has to survive it untouched."""
+        out = trn.shift_samples(self.SAMPLES, -7.25, 0.125)
+        before = (self.SAMPLES[1][0] - self.SAMPLES[0][0], self.SAMPLES[1][1] - self.SAMPLES[0][1])
+        after = (out[1][0] - out[0][0], out[1][1] - out[0][1])
+        assert after == pytest.approx(before, abs=1e-12)
+
+    def test_an_empty_buffer_is_not_a_special_case(self):
+        assert trn.shift_samples([], 1.0, 1.0) == []

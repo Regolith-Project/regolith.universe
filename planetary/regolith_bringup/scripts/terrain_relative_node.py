@@ -226,6 +226,19 @@ def match_offset(
     return dx, dy, margin
 
 
+def shift_samples(samples, dx: float, dy: float) -> list:
+    """Move a buffered window into the frame the filter is about to be in.
+
+    Called after a fix is published. Only the position pair moves - attitude and
+    the travelled-distance stamp are frame-independent, and shifting either would
+    be a bug that a match still absorbs silently.
+    """
+    return [
+        (x + dx, y + dy, yaw, roll, pitch, travelled)
+        for x, y, yaw, roll, pitch, travelled in samples
+    ]
+
+
 def rpy_from_quaternion(q) -> tuple:
     """Roll, pitch, yaw from a geometry_msgs Quaternion (same convention as m4_acceptance)."""
     roll = math.atan2(2.0 * (q.w * q.x + q.y * q.z), 1.0 - 2.0 * (q.x * q.x + q.y * q.y))
@@ -275,28 +288,31 @@ class TerrainRelativeNode(Node):
             )
             raise SystemExit(1)
 
-        # Ring of (odom_x, odom_y, yaw, roll, pitch, travelled_m), one per
-        # `sample_stride_m` of travel. Distance-spaced rather than time-spaced so a
-        # stationary rover cannot flood the window with duplicates of one spot.
+        # Ring of (x, y, yaw, roll, pitch, travelled_m) in the ESTIMATOR's frame,
+        # one per `sample_stride_m` of travel. Distance-spaced rather than
+        # time-spaced so a stationary rover cannot flood the window with
+        # duplicates of one spot.
         #
-        # POSITION IS STORED IN THE WHEEL-ODOMETRY FRAME, not the EKF's, and that
-        # is the whole reason /odom is subscribed at all. Publishing a fix makes
-        # the EKF jump; samples already in the window were recorded before that
-        # jump, so a window of stored EKF positions is internally inconsistent for
-        # exactly as long as it takes to refill - the shape handed to the matcher
-        # would have a step in it that the rover never drove. Wheel odometry
-        # drifts but is never jumped by fusion, so it carries the window's SHAPE
-        # faithfully; the current EKF pose supplies the absolute ANCHOR at match
-        # time. That is also precisely what the offline replay did (`ex[win] + cx`),
-        # so the live node and the validated model do the same thing.
+        # Publishing a fix makes the EKF jump, and samples already in the window
+        # were recorded before that jump - so the buffer is SHIFTED by the
+        # published correction in `_attempt_fix` and never straddles one. That is
+        # exactly what the offline replay did (`ex[win] + cx`: the whole window
+        # moves with the running correction), which is the point - the live node
+        # and the validated model have to be the same computation.
         #
-        # Heading comes from the EKF rather than from /odom: this node's fix
-        # corrects x and y only, so the EKF's yaw never jumps either, and
-        # wheel-integrated heading is the channel M4's error budget measured at
-        # 43 m of error over 107 m against the IMU-driven 3.5 m.
+        # An earlier version stored these in the wheel-odometry frame instead,
+        # reasoning that /odom is never jumped by fusion, and anchored the window
+        # onto the current EKF pose with a translation. That was wrong and it cost
+        # a live run to find out: /odom and the estimator's frame differ by a
+        # ROTATION as well (measured at ~47 deg on seed 123 - odom integrates
+        # wheel-derived heading from spawn, the EKF's yaw comes from the IMU), so
+        # the matcher was handed a path rotated off the one the rover drove. It
+        # then returned a confident, wrong fix - margin 4.66, correction +5.26 m
+        # where the true error was 0.15 m - and the run's divergence went to 4 m
+        # within seconds of the first published fix. A rotated path still looks
+        # like a perfectly good path; nothing in the cost surface can tell.
         self._samples = []
         self._travelled_m = 0.0
-        self._odom_xy = None
         self._ekf_xy = None
         self._last_xy = None
         self._last_fix_at_m = 0.0
@@ -332,26 +348,28 @@ class TerrainRelativeNode(Node):
         self._attitude = (roll, pitch)
 
     def _on_odom(self, msg: Odometry) -> None:
-        """Wheel odometry, kept for the window's shape and for travelled distance.
+        """Wheel odometry, used ONLY to measure distance travelled.
 
-        Distance is accumulated here rather than from the EKF because a published
-        fix moves the EKF by up to `search_m` in one step, which would otherwise
-        register as travel and bring the next fix forward.
+        Its pose is not used for anything else - see the buffer comment in
+        __init__ for what happened when it was. Distance comes from here rather
+        than from the EKF because a published fix moves the EKF by up to
+        `search_m` in one step, and that jump is not travel: counted as travel it
+        would bring the next fix forward and make the node fix more often the
+        worse it is doing.
         """
         x = msg.pose.pose.position.x
         y = msg.pose.pose.position.y
         if self._last_xy is not None:
             self._travelled_m += math.hypot(x - self._last_xy[0], y - self._last_xy[1])
         self._last_xy = (x, y)
-        self._odom_xy = (x, y)
 
     def _on_estimate(self, msg: Odometry) -> None:
-        if self._attitude is None or self._odom_xy is None:
+        if self._attitude is None or self._last_xy is None:
             return
         _, _, yaw = rpy_from_quaternion(msg.pose.pose.orientation)
         self._speed = abs(msg.twist.twist.linear.x)
         self._ekf_xy = (msg.pose.pose.position.x, msg.pose.pose.position.y)
-        x, y = self._odom_xy
+        x, y = self._ekf_xy
 
         # Only sample while genuinely driving. A wedged or reversing rover's
         # attitude is set by the boulder it is on, not by the terrain the DEM
@@ -374,18 +392,13 @@ class TerrainRelativeNode(Node):
 
     def _attempt_fix(self, msg: Odometry) -> None:
         arr = np.array(self._samples, dtype=float)
-        # Re-anchor the odometry-frame window onto the current estimate: the shape
-        # is dead-reckoned, the placement is wherever the filter currently believes
-        # the rover to be. See the buffer's comment in __init__.
-        anchor_x = self._ekf_xy[0] - self._odom_xy[0]
-        anchor_y = self._ekf_xy[1] - self._odom_xy[1]
         dx, dy, margin = match_offset(
             self._gx,
             self._gy,
             self._world_m,
             self._res_m,
-            arr[:, 0] + anchor_x,
-            arr[:, 1] + anchor_y,
+            arr[:, 0],
+            arr[:, 1],
             arr[:, 2],
             arr[:, 3],
             arr[:, 4],
@@ -431,6 +444,12 @@ class TerrainRelativeNode(Node):
             return
 
         self._last_offset = (dx, dy)
+        # Move the buffered window into the frame the filter is about to be in, so
+        # the next match sees one continuous path rather than one with a step in
+        # it. The EKF blends rather than jumping the whole way, so this over- or
+        # under-shoots slightly; that residual is a placement error the next fix
+        # simply measures again, which is the behaviour the replay validated.
+        self._samples = shift_samples(self._samples, dx, dy)
         out = PoseWithCovarianceStamped()
         out.header.stamp = msg.header.stamp
         out.header.frame_id = "odom"  # the frame the EKF estimates in
