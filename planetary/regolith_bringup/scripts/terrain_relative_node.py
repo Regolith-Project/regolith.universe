@@ -287,12 +287,24 @@ def reconstruct_window(dxs, dys, anchor_x: float, anchor_y: float):
 def clamp_correction(dx: float, dy: float, max_step_m: float) -> tuple:
     """Limit how far one fix may ask the filter to move.
 
-    A fix is a slow pull, not a teleport. Unlimited, a wrong lock compounds: in
+    A correction is a pull, not a teleport. Unlimited, a wrong lock compounds: in
     replay the worst run ended 37.4 m out and six of seven seed-7 runs took an
-    ~11.7 m excursion mid-run. Capped, the same runs stay under 8.8 m and every
-    one of the 25 improves. Genuine error is still corrected - just over tens of
-    seconds instead of instantly, which is fast against drift that took minutes
-    to accumulate.
+    ~11.7 m excursion mid-run.
+
+    The cap works WITH `correction_interval_m`, and the pair has to be read
+    together: corrections are rationed by metres travelled, so the cap is a
+    limit per unit of evidence rather than per unit of time, and the rover
+    cannot buy more correction by standing still. At one correction per metre
+    travelled, over the same 25 recorded runs:
+
+        cap 0.10 m -> 0.58 m median, 9 of 25 runs outside the 1.5 m bar
+        cap 0.25 m -> 0.36 m median, 5 of 25
+        cap 0.50 m -> 0.38 m median, 2 of 25, worst run 4.41 m
+        cap 1.00 m -> 0.38 m median, 3 of 25, worst excursion 9.7 m
+
+    0.5 m is taken from the middle of that: 0.25 and 0.5 are indistinguishable on
+    the median and 0.5 is clearly better on the tail, while 1.0 buys nothing and
+    widens the worst excursion again.
     """
     if max_step_m <= 0.0:
         return dx, dy
@@ -342,7 +354,16 @@ class TerrainRelativeNode(Node):
         self.declare_parameter("min_margin", 2.0)
         self.declare_parameter("consistency_m", 1.5)
         # How far one publish may ask the filter to move. See clamp_correction.
-        self.declare_parameter("max_step_m", 0.10)
+        self.declare_parameter("max_step_m", 0.5)
+        # Minimum travel between two APPLIED corrections. Publishing stays at
+        # publish_hz; only correcting is rationed, and it is rationed by evidence
+        # rather than by time. Re-applying a correction derived from a window
+        # that has not changed is counting the same measurement twice, and while
+        # the rover is stopped the window cannot change at all: the track then
+        # walks at max_step_m every tick for as long as it stands still. Live on
+        # seed 123 that was 0.10 m/s for ~180 s of a stall - 18 m of pure
+        # fabrication, with the filter faithfully following it.
+        self.declare_parameter("correction_interval_m", 1.0)
         # Wider than the matcher's measured 0.8 m accuracy, and deliberately so:
         # at 1 Hz over a 15 m window, consecutive fixes share almost all of their
         # samples, so they are nowhere near the independent measurements the
@@ -363,6 +384,9 @@ class TerrainRelativeNode(Node):
         self._min_margin = float(self.get_parameter("min_margin").value)
         self._consistency_m = float(self.get_parameter("consistency_m").value)
         self._max_step_m = float(self.get_parameter("max_step_m").value)
+        self._correction_interval_m = float(
+            self.get_parameter("correction_interval_m").value
+        )
         self._variance = float(self.get_parameter("position_variance").value)
 
         manifest_path = Path(self.get_parameter("manifest_path").value)
@@ -407,6 +431,7 @@ class TerrainRelativeNode(Node):
         self._last_odom_stamp = None
         self._pending_dx = 0.0   # track displacement since the last buffered sample
         self._pending_dy = 0.0
+        self._last_corrected_at_m = None
         self._last_xy = None
         self._last_offset = None
         self._last_offset_at_m = None
@@ -415,6 +440,7 @@ class TerrainRelativeNode(Node):
         self._attitude = None
         self._odom_vx = 0.0
         self._fixes_published = 0
+        self._corrections_applied = 0
         self._fixes_rejected_margin = 0
         self._fixes_rejected_consistency = 0
         self._report_every_m = 5.0
@@ -556,7 +582,18 @@ class TerrainRelativeNode(Node):
         span_m = self._samples[-1].travelled_m - self._samples[0].travelled_m
         if span_m < self._window_m * 0.5:
             return
-        self._attempt_fix()
+        # Correcting needs NEW evidence; publishing does not. A stationary rover
+        # should still be told where it is once a second - that is what keeps the
+        # filter anchored - but it must not be corrected again on the strength of
+        # a window it has not added anything to.
+        fresh = (
+            self._last_corrected_at_m is None
+            or self._travelled_m - self._last_corrected_at_m >= self._correction_interval_m
+        )
+        if fresh:
+            self._attempt_fix()
+        else:
+            self._publish_track()
 
     def _attempt_fix(self) -> None:
         arr = np.array(self._samples, dtype=float)
@@ -588,6 +625,7 @@ class TerrainRelativeNode(Node):
             )
             self._last_offset = (dx, dy)
             self._last_offset_at_m = self._travelled_m
+            self._publish_track()
             return
 
         # Two INDEPENDENT windows have to agree before the filter is told
@@ -621,6 +659,7 @@ class TerrainRelativeNode(Node):
                 )
                 self._last_offset = (dx, dy)
                 self._last_offset_at_m = self._travelled_m
+                self._publish_track()
                 return
             self._last_offset = (dx, dy)
             self._last_offset_at_m = self._travelled_m
@@ -633,11 +672,36 @@ class TerrainRelativeNode(Node):
                 f"Terrain fix held: first window, offset ({dx:+.2f}, {dy:+.2f}), margin "
                 f"{margin:.2f} - waiting for an independent window to confirm"
             )
+            self._publish_track()
             return
 
         dx, dy = clamp_correction(dx, dy, self._max_step_m)
         # Correct this node's own track. Nothing here consults the filter.
         self._track = (self._track[0] + dx, self._track[1] + dy)
+        self._last_corrected_at_m = self._travelled_m
+        self._corrections_applied += 1
+        self._publish_track()
+        # Summarise rather than log every publish: at 1 Hz the per-fix line would
+        # be ~3600 entries an hour in a launch log that several analyses grep.
+        if self._travelled_m - self._last_report_m >= self._report_every_m:
+            self._last_report_m = self._travelled_m
+            self.get_logger().info(
+                f"Terrain correction #{self._corrections_applied} at "
+                f"{self._travelled_m:.1f} m travelled: ({dx:+.2f}, {dy:+.2f}) m, margin "
+                f"{margin:.2f}, {len(self._samples)} samples, {self._fixes_published} "
+                f"poses published (rejected so far: {self._fixes_rejected_margin} "
+                f"ambiguous, {self._fixes_rejected_consistency} inconsistent)"
+            )
+
+    def _publish_track(self) -> None:
+        """Publish the node's current absolute position estimate.
+
+        Called every tick, corrected or not. A stationary rover still gets told
+        where it is once a second, which is what keeps the filter anchored - and
+        it is exactly what the filter needs to hear when nothing is moving.
+        """
+        if self._track is None or self._last_stamp is None:
+            return
         out = PoseWithCovarianceStamped()
         out.header.stamp = self._last_stamp
         out.header.frame_id = "odom"  # the frame the EKF estimates in
@@ -655,17 +719,6 @@ class TerrainRelativeNode(Node):
         out.pose.covariance = covariance
         self._pub.publish(out)
         self._fixes_published += 1
-        # Summarise rather than log every fix: at 1 Hz the per-fix line would be
-        # ~3600 entries an hour in a launch log that several analyses grep.
-        if self._travelled_m - self._last_report_m >= self._report_every_m:
-            self._last_report_m = self._travelled_m
-            self.get_logger().info(
-                f"Terrain fix #{self._fixes_published} at {self._travelled_m:.1f} m travelled: "
-                f"correction ({dx:+.2f}, {dy:+.2f}) m, margin {margin:.2f}, "
-                f"{len(self._samples)} samples (rejected so far: "
-                f"{self._fixes_rejected_margin} ambiguous, "
-                f"{self._fixes_rejected_consistency} inconsistent)"
-            )
 
 
 def main() -> None:
