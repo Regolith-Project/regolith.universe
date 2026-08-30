@@ -77,6 +77,7 @@ HONEST LIMITS, stated before any result is claimed:
 import json
 import math
 from pathlib import Path
+from typing import NamedTuple
 
 from geometry_msgs.msg import PoseWithCovarianceStamped
 from nav_msgs.msg import Odometry
@@ -226,6 +227,79 @@ def match_offset(
     return dx, dy, margin
 
 
+class Sample(NamedTuple):
+    """One buffered observation. Named because the tuple indices were a live bug.
+
+    Renumbering this buffer once already left a stale `[5]` in the stride check
+    that would have raised on the second sample of the next run; the fields are
+    named now so a reader and the interpreter both catch that instead of neither.
+    """
+
+    step_m: float          # distance travelled since the previous sample
+    yaw: float             # world heading, from the estimator (IMU-driven)
+    roll: float            # measured attitude, from the IMU
+    pitch: float
+    travelled_m: float     # odometer reading at this sample
+
+
+def reconstruct_window(steps_m, yaws, anchor_x: float, anchor_y: float):
+    """Lay the recent path out behind `anchor`, from odometer distances and headings.
+
+    `steps_m[i]` is the distance travelled between sample i-1 and i (steps_m[0] is
+    ignored), `yaws[i]` the world heading there. Returns (xs, ys) with the NEWEST
+    sample sitting exactly on the anchor.
+
+    This is what makes the loop stable, and it took three live failures to get
+    here. The window has to be expressed relative to the CURRENT estimate:
+
+    - Buffering absolute estimator positions and shifting them by each published
+      correction over-shifts (the filter absorbs only part of what it is told),
+      the match then reports ~zero, and the node certifies a wrong position as
+      correct once a second.
+    - Buffering them and NOT shifting leaves the window stale, so the same
+      correction is measured and re-applied every tick and the estimate runs away
+      geometrically - seed 123 reached 1432 m.
+
+    Anchoring sidesteps both: when the filter moves, the whole window moves with
+    it for free, so each match measures the residual that is actually left. The
+    shape comes from the odometer and the IMU's heading, neither of which the fix
+    can feed back into - wheel-integrated HEADING would be no good over this
+    distance (43 m of error over 107 m in M4's error budget, against 3.5 m for
+    the IMU's), but wheel-integrated DISTANCE is accurate to about 1% once the
+    slip gate is in, and distance is all that is taken from it.
+
+    Integrate segment by segment. Multiplying total backward distance by each
+    sample's own heading is only correct on a dead-straight path and silently
+    mangles every turn - it scored 3.19 m against 0.42 m in replay.
+    """
+    steps = np.asarray(steps_m, dtype=float)
+    yaws = np.asarray(yaws, dtype=float)
+    step_x = steps[1:] * np.cos(yaws[1:])
+    step_y = steps[1:] * np.sin(yaws[1:])
+    rel_x = np.concatenate([[0.0], np.cumsum(step_x)])
+    rel_y = np.concatenate([[0.0], np.cumsum(step_y)])
+    return anchor_x + rel_x - rel_x[-1], anchor_y + rel_y - rel_y[-1]
+
+
+def clamp_correction(dx: float, dy: float, max_step_m: float) -> tuple:
+    """Limit how far one fix may ask the filter to move.
+
+    A fix is a slow pull, not a teleport. Unlimited, a wrong lock compounds: in
+    replay the worst run ended 37.4 m out and six of seven seed-7 runs took an
+    ~11.7 m excursion mid-run. Capped, the same runs stay under 8.8 m and every
+    one of the 25 improves. Genuine error is still corrected - just over tens of
+    seconds instead of instantly, which is fast against drift that took minutes
+    to accumulate.
+    """
+    if max_step_m <= 0.0:
+        return dx, dy
+    magnitude = math.hypot(dx, dy)
+    if magnitude <= max_step_m:
+        return dx, dy
+    scale = max_step_m / magnitude
+    return dx * scale, dy * scale
+
+
 def rpy_from_quaternion(q) -> tuple:
     """Roll, pitch, yaw from a geometry_msgs Quaternion (same convention as m4_acceptance)."""
     roll = math.atan2(2.0 * (q.w * q.x + q.y * q.z), 1.0 - 2.0 * (q.x * q.x + q.y * q.y))
@@ -264,6 +338,8 @@ class TerrainRelativeNode(Node):
         self.declare_parameter("sample_stride_m", 0.2)
         self.declare_parameter("min_margin", 2.0)
         self.declare_parameter("consistency_m", 1.5)
+        # How far one publish may ask the filter to move. See clamp_correction.
+        self.declare_parameter("max_step_m", 0.10)
         # Wider than the matcher's measured 0.8 m accuracy, and deliberately so:
         # at 1 Hz over a 15 m window, consecutive fixes share almost all of their
         # samples, so they are nowhere near the independent measurements the
@@ -283,6 +359,7 @@ class TerrainRelativeNode(Node):
         self._stride_m = float(self.get_parameter("sample_stride_m").value)
         self._min_margin = float(self.get_parameter("min_margin").value)
         self._consistency_m = float(self.get_parameter("consistency_m").value)
+        self._max_step_m = float(self.get_parameter("max_step_m").value)
         self._variance = float(self.get_parameter("position_variance").value)
 
         manifest_path = Path(self.get_parameter("manifest_path").value)
@@ -383,18 +460,20 @@ class TerrainRelativeNode(Node):
         _, _, yaw = rpy_from_quaternion(msg.pose.pose.orientation)
         self._speed = abs(msg.twist.twist.linear.x)
         self._ekf_xy = (msg.pose.pose.position.x, msg.pose.pose.position.y)
-        x, y = self._ekf_xy
 
         # Only sample while genuinely driving. A wedged or reversing rover's
         # attitude is set by the boulder it is on, not by the terrain the DEM
         # knows about, and those samples are noise in the match, not signal.
         if self._speed < self._min_speed:
             return
-        if self._samples and self._travelled_m - self._samples[-1][5] < self._stride_m:
+        if self._samples and self._travelled_m - self._samples[-1].travelled_m < self._stride_m:
             return
         roll, pitch = self._attitude
-        self._samples.append((x, y, yaw, roll, pitch, self._travelled_m))
-        while self._samples and self._travelled_m - self._samples[0][5] > self._window_m:
+        step_m = (
+            self._travelled_m - self._samples[-1].travelled_m if self._samples else 0.0
+        )
+        self._samples.append(Sample(step_m, yaw, roll, pitch, self._travelled_m))
+        while self._samples and self._travelled_m - self._samples[0].travelled_m > self._window_m:
             self._samples.pop(0)
         self._last_orientation = msg.pose.pose.orientation
         self._last_stamp = msg.header.stamp
@@ -417,23 +496,26 @@ class TerrainRelativeNode(Node):
             return
         if len(self._samples) < self._min_samples:
             return
-        span_m = self._samples[-1][5] - self._samples[0][5]
+        span_m = self._samples[-1].travelled_m - self._samples[0].travelled_m
         if span_m < self._window_m * 0.5:
             return
         self._attempt_fix()
 
     def _attempt_fix(self) -> None:
         arr = np.array(self._samples, dtype=float)
+        # Lay the window out behind wherever the filter currently believes it is,
+        # so a correction the filter absorbs moves the window with it.
+        xs, ys = reconstruct_window(arr[:, 0], arr[:, 1], self._ekf_xy[0], self._ekf_xy[1])
         dx, dy, margin = match_offset(
             self._gx,
             self._gy,
             self._world_m,
             self._res_m,
-            arr[:, 0],
+            xs,
+            ys,
             arr[:, 1],
             arr[:, 2],
             arr[:, 3],
-            arr[:, 4],
             search_m=self._search_m,
             step_m=self._step_m,
         )
@@ -495,20 +577,7 @@ class TerrainRelativeNode(Node):
             )
             return
 
-        # The buffer is deliberately NOT shifted by the correction. An earlier
-        # version did that - it made sense when fixes were sparse and the filter
-        # jumped - and under 1 Hz publishing it broke badly: the buffer was moved
-        # by the REQUESTED dx every tick while the filter absorbed only part of
-        # it, so the two drifted out of correspondence. The match then aligned an
-        # already-shifted buffer, reported a correction of (-0.00, +0.00), and the
-        # node published "you are exactly where you think you are" once a second
-        # into a filter that was several metres wrong - pinning the error in place
-        # and fighting the odometry. Live on seed 123 that oscillated divergence
-        # between 0.5 and 13 m. See PROGRESS.md.
-        #
-        # Leaving the buffer in the estimator's own recorded frame means every
-        # tick measures the estimator's ACTUAL current discrepancy, which is the
-        # only quantity worth publishing.
+        dx, dy = clamp_correction(dx, dy, self._max_step_m)
         out = PoseWithCovarianceStamped()
         out.header.stamp = self._last_stamp
         out.header.frame_id = "odom"  # the frame the EKF estimates in
