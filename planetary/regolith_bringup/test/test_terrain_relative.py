@@ -244,34 +244,23 @@ class TestQuaternionConversion:
         assert pitch == pytest.approx(math.pi / 2, abs=1e-6)
 
 
-class TestShiftSamples:
-    """Publishing a fix makes the EKF jump; the buffered window has to follow it.
+class TestNoBufferShift:
+    """The buffer must stay in the estimator's frame - a regression test in prose.
 
-    Without this the window straddles the jump and hands the matcher a path with
-    a step in it that the rover never drove - and a wrong-but-smooth path is
-    matched just as confidently as a right one, which is the failure mode that
-    cost a live run here (see the node's buffer comment).
+    `shift_samples` used to move the whole window by each published correction.
+    Under sparse fixes that was right; under 1 Hz publishing it was the bug that
+    made a live run oscillate between 0.5 and 13 m of divergence, because the
+    buffer moved by the REQUESTED correction while the filter absorbed only part
+    of it. The match then found the shifted buffer already aligned, reported
+    (-0.00, +0.00), and the node certified a several-metre error as correct once
+    a second.
+
+    There is no function left to unit-test, so this asserts the property that
+    replaced it: nothing in the module shifts a sample buffer.
     """
 
-    SAMPLES = [
-        (1.0, 2.0, 0.5, 0.01, 0.02, 10.0),
-        (2.0, 3.0, 0.6, 0.03, 0.04, 11.0),
-    ]
-
-    def test_positions_move_by_the_correction(self):
-        out = trn.shift_samples(self.SAMPLES, 0.5, -1.5)
-        assert [(s[0], s[1]) for s in out] == [(1.5, 0.5), (2.5, 1.5)]
-
-    def test_attitude_and_distance_are_frame_independent_and_must_not_move(self):
-        out = trn.shift_samples(self.SAMPLES, 3.0, 4.0)
-        assert [s[2:] for s in out] == [s[2:] for s in self.SAMPLES]
-
-    def test_the_window_shape_is_preserved_exactly(self):
-        """A shift is rigid: every inter-sample vector has to survive it untouched."""
-        out = trn.shift_samples(self.SAMPLES, -7.25, 0.125)
-        before = (self.SAMPLES[1][0] - self.SAMPLES[0][0], self.SAMPLES[1][1] - self.SAMPLES[0][1])
-        after = (out[1][0] - out[0][0], out[1][1] - out[0][1])
-        assert after == pytest.approx(before, abs=1e-12)
-
-    def test_an_empty_buffer_is_not_a_special_case(self):
-        assert trn.shift_samples([], 1.0, 1.0) == []
+    def test_the_module_has_no_buffer_shifting_helper(self):
+        assert not hasattr(trn, "shift_samples"), (
+            "shift_samples is back - under dense publishing it pins the "
+            "estimator's error in place instead of correcting it"
+        )

@@ -226,19 +226,6 @@ def match_offset(
     return dx, dy, margin
 
 
-def shift_samples(samples, dx: float, dy: float) -> list:
-    """Move a buffered window into the frame the filter is about to be in.
-
-    Called after a fix is published. Only the position pair moves - attitude and
-    the travelled-distance stamp are frame-independent, and shifting either would
-    be a bug that a match still absorbs silently.
-    """
-    return [
-        (x + dx, y + dy, yaw, roll, pitch, travelled)
-        for x, y, yaw, roll, pitch, travelled in samples
-    ]
-
-
 def rpy_from_quaternion(q) -> tuple:
     """Roll, pitch, yaw from a geometry_msgs Quaternion (same convention as m4_acceptance)."""
     roll = math.atan2(2.0 * (q.w * q.x + q.y * q.z), 1.0 - 2.0 * (q.x * q.x + q.y * q.y))
@@ -508,12 +495,20 @@ class TerrainRelativeNode(Node):
             )
             return
 
-        # Move the buffered window into the frame the filter is about to be in, so
-        # the next match sees one continuous path rather than one with a step in
-        # it. The EKF blends rather than jumping the whole way, so this over- or
-        # under-shoots slightly; that residual is a placement error the next fix
-        # simply measures again, which is the behaviour the replay validated.
-        self._samples = shift_samples(self._samples, dx, dy)
+        # The buffer is deliberately NOT shifted by the correction. An earlier
+        # version did that - it made sense when fixes were sparse and the filter
+        # jumped - and under 1 Hz publishing it broke badly: the buffer was moved
+        # by the REQUESTED dx every tick while the filter absorbed only part of
+        # it, so the two drifted out of correspondence. The match then aligned an
+        # already-shifted buffer, reported a correction of (-0.00, +0.00), and the
+        # node published "you are exactly where you think you are" once a second
+        # into a filter that was several metres wrong - pinning the error in place
+        # and fighting the odometry. Live on seed 123 that oscillated divergence
+        # between 0.5 and 13 m. See PROGRESS.md.
+        #
+        # Leaving the buffer in the estimator's own recorded frame means every
+        # tick measures the estimator's ACTUAL current discrepancy, which is the
+        # only quantity worth publishing.
         out = PoseWithCovarianceStamped()
         out.header.stamp = self._last_stamp
         out.header.frame_id = "odom"  # the frame the EKF estimates in
