@@ -248,49 +248,50 @@ class TestReconstructWindow:
     """The anchored window. Three live runs failed on the code this replaced."""
 
     def test_a_straight_path_lays_out_behind_the_anchor(self):
-        steps = [0.0, 1.0, 1.0, 1.0]
-        yaws = [0.0, 0.0, 0.0, 0.0]           # heading +x
-        xs, ys = trn.reconstruct_window(steps, yaws, 10.0, 5.0)
+        dxs = [0.0, 1.0, 1.0, 1.0]
+        dys = [0.0, 0.0, 0.0, 0.0]
+        xs, ys = trn.reconstruct_window(dxs, dys, 10.0, 5.0)
         assert xs == pytest.approx([7.0, 8.0, 9.0, 10.0])
         assert ys == pytest.approx([5.0, 5.0, 5.0, 5.0])
 
     def test_the_newest_sample_always_sits_exactly_on_the_anchor(self):
         """This is the property that makes the loop converge instead of running away."""
         rng = np.random.default_rng(0)
-        steps = np.concatenate([[0.0], rng.uniform(0.1, 0.4, 40)])
-        yaws = np.cumsum(rng.normal(0, 0.2, 41))
-        xs, ys = trn.reconstruct_window(steps, yaws, -3.25, 7.5)
+        dxs = np.concatenate([[0.0], rng.normal(0, 0.3, 40)])
+        dys = np.concatenate([[0.0], rng.normal(0, 0.3, 40)])
+        xs, ys = trn.reconstruct_window(dxs, dys, -3.25, 7.5)
         assert xs[-1] == pytest.approx(-3.25, abs=1e-12)
         assert ys[-1] == pytest.approx(7.5, abs=1e-12)
 
     def test_moving_the_anchor_translates_the_whole_window_rigidly(self):
-        """When the filter absorbs a correction the window must follow it exactly."""
+        """When the track is corrected the window must follow it exactly."""
         rng = np.random.default_rng(1)
-        steps = np.concatenate([[0.0], rng.uniform(0.1, 0.4, 30)])
-        yaws = np.cumsum(rng.normal(0, 0.3, 31))
-        x0, y0 = trn.reconstruct_window(steps, yaws, 0.0, 0.0)
-        x1, y1 = trn.reconstruct_window(steps, yaws, 2.5, -1.25)
+        dxs = np.concatenate([[0.0], rng.normal(0, 0.3, 30)])
+        dys = np.concatenate([[0.0], rng.normal(0, 0.3, 30)])
+        x0, y0 = trn.reconstruct_window(dxs, dys, 0.0, 0.0)
+        x1, y1 = trn.reconstruct_window(dxs, dys, 2.5, -1.25)
         assert (x1 - x0) == pytest.approx(np.full(len(x0), 2.5))
         assert (y1 - y0) == pytest.approx(np.full(len(y0), -1.25))
 
-    def test_a_turn_is_integrated_segment_by_segment(self):
-        """A right-angle turn: total distance times one heading gets this wrong.
-
-        That exact error scored 3.19 m against 0.42 m in replay, so it is pinned
-        to a hand-computed answer rather than to the function's own output.
-        """
-        steps = [0.0, 2.0, 3.0]
-        yaws = [0.0, 0.0, math.pi / 2]        # 2 m east, then 3 m north
-        xs, ys = trn.reconstruct_window(steps, yaws, 0.0, 0.0)
+    def test_a_turn_is_accumulated_segment_by_segment(self):
+        """2 m east then 3 m north, pinned to a hand-computed answer."""
+        xs, ys = trn.reconstruct_window([0.0, 2.0, 0.0], [0.0, 0.0, 3.0], 0.0, 0.0)
         assert xs == pytest.approx([-2.0, 0.0, 0.0], abs=1e-9)
         assert ys == pytest.approx([-3.0, -3.0, 0.0], abs=1e-9)
 
-    def test_the_first_step_is_ignored_not_applied(self):
-        steps_a = [0.0, 1.0]
-        steps_b = [99.0, 1.0]
-        assert trn.reconstruct_window(steps_a, [0.0, 0.0], 0.0, 0.0)[0] == pytest.approx(
-            trn.reconstruct_window(steps_b, [0.0, 0.0], 0.0, 0.0)[0]
-        )
+    def test_a_reversing_segment_goes_backwards_not_forwards(self):
+        """Every escape manoeuvre reverses, and a magnitude-only step lays it forwards.
+
+        This is why the buffer carries a signed world vector rather than a
+        distance to be re-projected along the heading.
+        """
+        xs, _ = trn.reconstruct_window([0.0, 1.0, -1.0], [0.0, 0.0, 0.0], 0.0, 0.0)
+        assert xs == pytest.approx([0.0, 1.0, 0.0], abs=1e-9)
+
+    def test_the_first_displacement_is_ignored_not_applied(self):
+        a = trn.reconstruct_window([0.0, 1.0], [0.0, 0.0], 0.0, 0.0)[0]
+        b = trn.reconstruct_window([99.0, 1.0], [0.0, 0.0], 0.0, 0.0)[0]
+        assert a == pytest.approx(b)
 
 
 class TestClampCorrection:

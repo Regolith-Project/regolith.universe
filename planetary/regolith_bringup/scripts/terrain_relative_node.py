@@ -233,21 +233,28 @@ class Sample(NamedTuple):
     Renumbering this buffer once already left a stale `[5]` in the stride check
     that would have raised on the second sample of the next run; the fields are
     named now so a reader and the interpreter both catch that instead of neither.
+
+    The displacement is carried as a world-frame VECTOR rather than as a distance
+    to be re-projected along a heading later. Re-projecting is wrong twice over
+    on this rover: it lays reverse motion (every escape manoeuvre) forwards, and
+    it assumes the heading was constant across the step. Differencing the node's
+    own track costs nothing and is exact for both.
     """
 
-    step_m: float          # distance travelled since the previous sample
+    dx_m: float            # world displacement since the previous sample
+    dy_m: float
     yaw: float             # world heading, from the estimator (IMU-driven)
     roll: float            # measured attitude, from the IMU
     pitch: float
     travelled_m: float     # odometer reading at this sample
 
 
-def reconstruct_window(steps_m, yaws, anchor_x: float, anchor_y: float):
-    """Lay the recent path out behind `anchor`, from odometer distances and headings.
+def reconstruct_window(dxs, dys, anchor_x: float, anchor_y: float):
+    """Lay the recent path out behind `anchor`, from per-sample world displacements.
 
-    `steps_m[i]` is the distance travelled between sample i-1 and i (steps_m[0] is
-    ignored), `yaws[i]` the world heading there. Returns (xs, ys) with the NEWEST
-    sample sitting exactly on the anchor.
+    `dxs[i]`/`dys[i]` are the displacement between sample i-1 and i (index 0 is
+    ignored). Returns (xs, ys) with the NEWEST sample sitting exactly on the
+    anchor.
 
     This is what makes the loop stable, and it took three live failures to get
     here. The window has to be expressed relative to the CURRENT estimate:
@@ -268,16 +275,12 @@ def reconstruct_window(steps_m, yaws, anchor_x: float, anchor_y: float):
     the IMU's), but wheel-integrated DISTANCE is accurate to about 1% once the
     slip gate is in, and distance is all that is taken from it.
 
-    Integrate segment by segment. Multiplying total backward distance by each
+    Accumulate segment by segment. Multiplying a total backward distance by each
     sample's own heading is only correct on a dead-straight path and silently
     mangles every turn - it scored 3.19 m against 0.42 m in replay.
     """
-    steps = np.asarray(steps_m, dtype=float)
-    yaws = np.asarray(yaws, dtype=float)
-    step_x = steps[1:] * np.cos(yaws[1:])
-    step_y = steps[1:] * np.sin(yaws[1:])
-    rel_x = np.concatenate([[0.0], np.cumsum(step_x)])
-    rel_y = np.concatenate([[0.0], np.cumsum(step_y)])
+    rel_x = np.concatenate([[0.0], np.cumsum(np.asarray(dxs, dtype=float)[1:])])
+    rel_y = np.concatenate([[0.0], np.cumsum(np.asarray(dys, dtype=float)[1:])])
     return anchor_x + rel_x - rel_x[-1], anchor_y + rel_y - rel_y[-1]
 
 
@@ -399,14 +402,18 @@ class TerrainRelativeNode(Node):
         # like a perfectly good path; nothing in the cost surface can tell.
         self._samples = []
         self._travelled_m = 0.0
-        self._ekf_xy = None
+        self._track = None      # this node's own absolute position estimate
+        self._yaw = None
+        self._last_odom_stamp = None
+        self._pending_dx = 0.0   # track displacement since the last buffered sample
+        self._pending_dy = 0.0
         self._last_xy = None
         self._last_offset = None
         self._last_offset_at_m = None
         self._last_orientation = None
         self._last_stamp = None
         self._attitude = None
-        self._speed = 0.0
+        self._odom_vx = 0.0
         self._fixes_published = 0
         self._fixes_rejected_margin = 0
         self._fixes_rejected_consistency = 0
@@ -438,6 +445,31 @@ class TerrainRelativeNode(Node):
         roll, pitch, _ = rpy_from_quaternion(msg.orientation)
         self._attitude = (roll, pitch)
 
+    def _advance_track(self, step_m: float) -> None:
+        """Dead-reckon this node's OWN absolute position forward.
+
+        The node keeps its own track and never reads the filter's corrected pose
+        back into it. That independence is the whole point, and getting it wrong
+        wrecked three live runs in a row: publishing `filter_pose + offset` is not
+        an absolute measurement at all, it is a target defined relative to the
+        estimate, so it sits a fixed distance ahead of wherever the filter has
+        got to. The filter chases it, reads the pursuit as velocity, and
+        accelerates - measured at 0.85 m/s of estimated motion while the wheels
+        reported 0.045 m/s. A carrot on a stick.
+
+        The offline replay never had this failure because its track is the raw
+        OPEN-LOOP trajectory plus accumulated corrections - it never reads back a
+        corrected estimate. This method is the live equivalent of that, and the
+        node is now a small standalone terrain-aided dead-reckoner whose output
+        happens to be fused by an EKF downstream.
+        """
+        if self._track is None or self._yaw is None:
+            return
+        self._track = (
+            self._track[0] + step_m * math.cos(self._yaw),
+            self._track[1] + step_m * math.sin(self._yaw),
+        )
+
     def _on_odom(self, msg: Odometry) -> None:
         """Wheel odometry, used ONLY to measure distance travelled.
 
@@ -448,31 +480,56 @@ class TerrainRelativeNode(Node):
         would bring the next fix forward and make the node fix more often the
         worse it is doing.
         """
-        x = msg.pose.pose.position.x
-        y = msg.pose.pose.position.y
-        if self._last_xy is not None:
-            self._travelled_m += math.hypot(x - self._last_xy[0], y - self._last_xy[1])
-        self._last_xy = (x, y)
+        # Integrate the SIGNED body-forward velocity rather than differencing the
+        # odometry pose. Two reasons, both load-bearing: the pose difference is a
+        # magnitude, so it lays every reverse leg of an escape manoeuvre forwards,
+        # and /odom's own frame is rotated relative to the world (measured at 47
+        # degrees on seed 123), so its deltas cannot be used as world vectors
+        # without a rotation that is itself drifting.
+        # Gate sampling on the WHEELS' speed, not the filter's. The filter's
+        # velocity is a fused quantity this node's own output feeds into, so
+        # gating on it would be one more way to read our own answer back; the
+        # offline validation used odom_vx and the node should be the same
+        # computation, not nearly the same one.
+        self._odom_vx = msg.twist.twist.linear.x
+        stamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+        if self._last_odom_stamp is not None:
+            dt = stamp - self._last_odom_stamp
+            if 0.0 < dt < 1.0:
+                step_m = msg.twist.twist.linear.x * dt
+                before = self._track
+                self._advance_track(step_m)
+                if before is not None and self._track is not None:
+                    self._pending_dx += self._track[0] - before[0]
+                    self._pending_dy += self._track[1] - before[1]
+                self._travelled_m += abs(step_m)
+        self._last_odom_stamp = stamp
+        self._last_xy = (msg.pose.pose.position.x, msg.pose.pose.position.y)
 
     def _on_estimate(self, msg: Odometry) -> None:
         if self._attitude is None or self._last_xy is None:
             return
         _, _, yaw = rpy_from_quaternion(msg.pose.pose.orientation)
-        self._speed = abs(msg.twist.twist.linear.x)
-        self._ekf_xy = (msg.pose.pose.position.x, msg.pose.pose.position.y)
+        self._yaw = yaw
+        # The filter's pose seeds this node's track ONCE, before any fix has been
+        # published and so before the filter can have been influenced by one.
+        # After that the track is the node's own and the filter's pose is not
+        # read again - see _advance_track.
+        if self._track is None:
+            self._track = (msg.pose.pose.position.x, msg.pose.pose.position.y)
 
         # Only sample while genuinely driving. A wedged or reversing rover's
         # attitude is set by the boulder it is on, not by the terrain the DEM
         # knows about, and those samples are noise in the match, not signal.
-        if self._speed < self._min_speed:
+        if abs(self._odom_vx) < self._min_speed:
             return
         if self._samples and self._travelled_m - self._samples[-1].travelled_m < self._stride_m:
             return
         roll, pitch = self._attitude
-        step_m = (
-            self._travelled_m - self._samples[-1].travelled_m if self._samples else 0.0
+        self._samples.append(
+            Sample(self._pending_dx, self._pending_dy, yaw, roll, pitch, self._travelled_m)
         )
-        self._samples.append(Sample(step_m, yaw, roll, pitch, self._travelled_m))
+        self._pending_dx = self._pending_dy = 0.0
         while self._samples and self._travelled_m - self._samples[0].travelled_m > self._window_m:
             self._samples.pop(0)
         self._last_orientation = msg.pose.pose.orientation
@@ -492,7 +549,7 @@ class TerrainRelativeNode(Node):
         measurement over and over - which is the point. It is an anchor, and its
         correlation is paid for in `position_variance` above.
         """
-        if self._last_stamp is None or self._ekf_xy is None:
+        if self._last_stamp is None or self._track is None:
             return
         if len(self._samples) < self._min_samples:
             return
@@ -505,7 +562,8 @@ class TerrainRelativeNode(Node):
         arr = np.array(self._samples, dtype=float)
         # Lay the window out behind wherever the filter currently believes it is,
         # so a correction the filter absorbs moves the window with it.
-        xs, ys = reconstruct_window(arr[:, 0], arr[:, 1], self._ekf_xy[0], self._ekf_xy[1])
+        xs, ys = reconstruct_window(arr[:, 0], arr[:, 1], self._track[0], self._track[1])
+        yaws, rolls, pitches = arr[:, 2], arr[:, 3], arr[:, 4]
         dx, dy, margin = match_offset(
             self._gx,
             self._gy,
@@ -513,9 +571,9 @@ class TerrainRelativeNode(Node):
             self._res_m,
             xs,
             ys,
-            arr[:, 1],
-            arr[:, 2],
-            arr[:, 3],
+            yaws,
+            rolls,
+            pitches,
             search_m=self._search_m,
             step_m=self._step_m,
         )
@@ -578,12 +636,14 @@ class TerrainRelativeNode(Node):
             return
 
         dx, dy = clamp_correction(dx, dy, self._max_step_m)
+        # Correct this node's own track. Nothing here consults the filter.
+        self._track = (self._track[0] + dx, self._track[1] + dy)
         out = PoseWithCovarianceStamped()
         out.header.stamp = self._last_stamp
         out.header.frame_id = "odom"  # the frame the EKF estimates in
         out.pose.pose.orientation = self._last_orientation
-        out.pose.pose.position.x = self._ekf_xy[0] + dx
-        out.pose.pose.position.y = self._ekf_xy[1] + dy
+        out.pose.pose.position.x = self._track[0]
+        out.pose.pose.position.y = self._track[1]
         out.pose.pose.position.z = 0.0
         covariance = [0.0] * 36
         covariance[0] = self._variance
