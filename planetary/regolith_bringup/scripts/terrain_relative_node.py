@@ -255,7 +255,21 @@ class TerrainRelativeNode(Node):
         # needs is terrain traversed, and this rover's speed varies by an order
         # of magnitude between cruising and grinding through a recovery.
         self.declare_parameter("window_m", 15.0)
-        self.declare_parameter("update_m", 6.0)
+        # Publishing is TIME-paced, not distance-paced, and that is the whole
+        # lesson of the first live run. A fix every 6 m of travel is a fix every
+        # several MINUTES on this rover, and a single isolated absolute update
+        # left the EKF's velocity state corrupted with nothing absolute to
+        # contradict it until the next one - divergence went 0.17 m -> 29.6 m
+        # from one 0.86 m correction. The oracle publishes at ~1 Hz and never
+        # showed this: a dense stream gives an injected error no room to
+        # integrate. See PROGRESS.md.
+        #
+        # Density costs accuracy nothing and buys stability: in the replay,
+        # matching every 0.25 / 0.5 / 1 / 2 / 3 m all land at 0.33-0.42 m median
+        # against 0.77 m at 6 m, and the curve is flat below ~2 m because the
+        # window barely changes. So the rate is chosen for the filter, not for
+        # the matcher.
+        self.declare_parameter("publish_hz", 1.0)
         self.declare_parameter("search_m", 6.0)
         self.declare_parameter("step_m", 0.25)
         self.declare_parameter("min_speed_mps", 0.03)
@@ -263,10 +277,18 @@ class TerrainRelativeNode(Node):
         self.declare_parameter("sample_stride_m", 0.2)
         self.declare_parameter("min_margin", 2.0)
         self.declare_parameter("consistency_m", 1.5)
-        self.declare_parameter("position_variance", 1.0)
+        # Wider than the matcher's measured 0.8 m accuracy, and deliberately so:
+        # at 1 Hz over a 15 m window, consecutive fixes share almost all of their
+        # samples, so they are nowhere near the independent measurements the
+        # filter assumes. Publishing 0.8 m sigma sixty times a minute would make
+        # the filter far more certain than the evidence supports. 2.0 m sigma is
+        # a judgement about that correlation, not a measurement of it - it keeps
+        # the anchor firm while making any single fix unable to yank the
+        # estimate, which is what went wrong live.
+        self.declare_parameter("position_variance", 4.0)
 
         self._window_m = float(self.get_parameter("window_m").value)
-        self._update_m = float(self.get_parameter("update_m").value)
+        self._publish_hz = float(self.get_parameter("publish_hz").value)
         self._search_m = float(self.get_parameter("search_m").value)
         self._step_m = float(self.get_parameter("step_m").value)
         self._min_speed = float(self.get_parameter("min_speed_mps").value)
@@ -315,13 +337,17 @@ class TerrainRelativeNode(Node):
         self._travelled_m = 0.0
         self._ekf_xy = None
         self._last_xy = None
-        self._last_fix_at_m = 0.0
         self._last_offset = None
+        self._last_offset_at_m = None
+        self._last_orientation = None
+        self._last_stamp = None
         self._attitude = None
         self._speed = 0.0
         self._fixes_published = 0
         self._fixes_rejected_margin = 0
         self._fixes_rejected_consistency = 0
+        self._report_every_m = 5.0
+        self._last_report_m = -1e9
 
         self._pub = self.create_publisher(
             PoseWithCovarianceStamped, "/absolute_reference/pose", 10
@@ -329,9 +355,10 @@ class TerrainRelativeNode(Node):
         self.create_subscription(Imu, "/imu", self._on_imu, 20)
         self.create_subscription(Odometry, "/odom", self._on_odom, 20)
         self.create_subscription(Odometry, "/odometry/filtered", self._on_estimate, 20)
+        self.create_timer(1.0 / max(self._publish_hz, 1e-3), self._tick)
         self.get_logger().info(
-            f"Terrain-relative navigation active: {self._window_m:.0f} m window, fix every "
-            f"{self._update_m:.0f} m, +-{self._search_m:.0f} m search at {self._step_m:.2f} m, "
+            f"Terrain-relative navigation active: {self._window_m:.0f} m window, fixing at "
+            f"{self._publish_hz:.1f} Hz, +-{self._search_m:.0f} m search at {self._step_m:.2f} m, "
             f"DEM {self._res_m:.3f} m/px from {manifest_path}. Onboard sensors only - no ground "
             "truth is read by this node."
         )
@@ -382,15 +409,33 @@ class TerrainRelativeNode(Node):
         self._samples.append((x, y, yaw, roll, pitch, self._travelled_m))
         while self._samples and self._travelled_m - self._samples[0][5] > self._window_m:
             self._samples.pop(0)
+        self._last_orientation = msg.pose.pose.orientation
+        self._last_stamp = msg.header.stamp
 
-        if self._travelled_m - self._last_fix_at_m < self._update_m:
+    def _tick(self) -> None:
+        """Re-match and publish on a clock, not on distance travelled.
+
+        Re-running the match rather than republishing a stored offset is what
+        keeps this from running away: each publish is `current estimate + freshly
+        matched offset`, so as the filter converges onto the matched position the
+        offset shrinks to nothing on its own. Republishing a remembered
+        correction against an estimate that has already absorbed it would add it
+        twice, and keep adding it.
+
+        The window barely changes between ticks, so this is mostly the same
+        measurement over and over - which is the point. It is an anchor, and its
+        correlation is paid for in `position_variance` above.
+        """
+        if self._last_stamp is None or self._ekf_xy is None:
             return
         if len(self._samples) < self._min_samples:
             return
-        self._last_fix_at_m = self._travelled_m
-        self._attempt_fix(msg)
+        span_m = self._samples[-1][5] - self._samples[0][5]
+        if span_m < self._window_m * 0.5:
+            return
+        self._attempt_fix()
 
-    def _attempt_fix(self, msg: Odometry) -> None:
+    def _attempt_fix(self) -> None:
         arr = np.array(self._samples, dtype=float)
         dx, dy, margin = match_offset(
             self._gx,
@@ -411,17 +456,32 @@ class TerrainRelativeNode(Node):
             self.get_logger().info(
                 f"Terrain fix rejected: margin {margin:.2f} < {self._min_margin:.2f} - this "
                 f"stretch of terrain does not determine position ({len(self._samples)} samples "
-                f"over {self._window_m:.0f} m)"
+                f"over {self._window_m:.0f} m)",
+                throttle_duration_sec=30.0,
             )
             self._last_offset = (dx, dy)
+            self._last_offset_at_m = self._travelled_m
             return
 
-        # Two independent windows have to agree before the filter is told
+        # Two INDEPENDENT windows have to agree before the filter is told
         # anything. A single window's gross mismatch - a crater rim that looks
         # like the next crater rim - is the failure mode that would actively harm
         # the estimate, and on the recorded runs this gate cut the p90 error from
         # 3.91 m to 1.56 m for the cost of rejecting a third of the fixes.
-        if self._last_offset is not None:
+        #
+        # "Independent" is doing real work now that this runs on a clock. At 1 Hz
+        # consecutive windows share every sample but the newest, so they agree
+        # trivially and comparing them would be a gate that always passes - it
+        # would have been vacuous exactly where the previous version's version of
+        # it already failed, letting through a wrong answer that MOVED smoothly.
+        # So the comparison is against the last offset from at least half a
+        # window of travel ago, which is the last one built on substantially
+        # different terrain.
+        independent_m = self._window_m * 0.5
+        if (self._last_offset is not None and self._last_offset_at_m is not None
+                and self._travelled_m - self._last_offset_at_m < independent_m):
+            pass  # too soon to be a second opinion; keep the older one to compare against
+        elif self._last_offset is not None:
             disagreement = math.hypot(dx - self._last_offset[0], dy - self._last_offset[1])
             if disagreement > self._consistency_m:
                 self._fixes_rejected_consistency += 1
@@ -429,21 +489,25 @@ class TerrainRelativeNode(Node):
                     f"Terrain fix rejected: disagrees with the previous window by "
                     f"{disagreement:.2f} m (> {self._consistency_m:.2f}); offset now "
                     f"({dx:+.2f}, {dy:+.2f}), was ({self._last_offset[0]:+.2f}, "
-                    f"{self._last_offset[1]:+.2f})"
+                    f"{self._last_offset[1]:+.2f})",
+                    throttle_duration_sec=30.0,
                 )
                 self._last_offset = (dx, dy)
+                self._last_offset_at_m = self._travelled_m
                 return
+            self._last_offset = (dx, dy)
+            self._last_offset_at_m = self._travelled_m
         else:
             # Nothing to agree with yet. Hold the first fix back rather than
             # publish an ungated one into a filter that has no defence against it.
             self._last_offset = (dx, dy)
+            self._last_offset_at_m = self._travelled_m
             self.get_logger().info(
                 f"Terrain fix held: first window, offset ({dx:+.2f}, {dy:+.2f}), margin "
-                f"{margin:.2f} - waiting for a second window to confirm"
+                f"{margin:.2f} - waiting for an independent window to confirm"
             )
             return
 
-        self._last_offset = (dx, dy)
         # Move the buffered window into the frame the filter is about to be in, so
         # the next match sees one continuous path rather than one with a step in
         # it. The EKF blends rather than jumping the whole way, so this over- or
@@ -451,12 +515,12 @@ class TerrainRelativeNode(Node):
         # simply measures again, which is the behaviour the replay validated.
         self._samples = shift_samples(self._samples, dx, dy)
         out = PoseWithCovarianceStamped()
-        out.header.stamp = msg.header.stamp
+        out.header.stamp = self._last_stamp
         out.header.frame_id = "odom"  # the frame the EKF estimates in
-        out.pose.pose.orientation = msg.pose.pose.orientation
+        out.pose.pose.orientation = self._last_orientation
         out.pose.pose.position.x = self._ekf_xy[0] + dx
         out.pose.pose.position.y = self._ekf_xy[1] + dy
-        out.pose.pose.position.z = msg.pose.pose.position.z
+        out.pose.pose.position.z = 0.0
         covariance = [0.0] * 36
         covariance[0] = self._variance
         covariance[7] = self._variance
@@ -467,12 +531,17 @@ class TerrainRelativeNode(Node):
         out.pose.covariance = covariance
         self._pub.publish(out)
         self._fixes_published += 1
-        self.get_logger().info(
-            f"Terrain fix #{self._fixes_published} at {self._travelled_m:.1f} m travelled: "
-            f"correction ({dx:+.2f}, {dy:+.2f}) m, margin {margin:.2f}, {len(self._samples)} "
-            f"samples (rejected so far: {self._fixes_rejected_margin} ambiguous, "
-            f"{self._fixes_rejected_consistency} inconsistent)"
-        )
+        # Summarise rather than log every fix: at 1 Hz the per-fix line would be
+        # ~3600 entries an hour in a launch log that several analyses grep.
+        if self._travelled_m - self._last_report_m >= self._report_every_m:
+            self._last_report_m = self._travelled_m
+            self.get_logger().info(
+                f"Terrain fix #{self._fixes_published} at {self._travelled_m:.1f} m travelled: "
+                f"correction ({dx:+.2f}, {dy:+.2f}) m, margin {margin:.2f}, "
+                f"{len(self._samples)} samples (rejected so far: "
+                f"{self._fixes_rejected_margin} ambiguous, "
+                f"{self._fixes_rejected_consistency} inconsistent)"
+            )
 
 
 def main() -> None:
