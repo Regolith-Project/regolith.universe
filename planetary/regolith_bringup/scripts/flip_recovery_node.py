@@ -374,9 +374,7 @@ class FlipRecoveryNode(Node):
                 # _stuck_since bookkeeping below, so without these two ages the
                 # log cannot say whether the oracle was one tick from firing or
                 # nowhere near it when slip took the event.
-                live = (
-                    f"{t - self._stuck_since:.2f}s" if self._stuck_since is not None else "none"
-                )
+                live = f"{t - self._stuck_since:.2f}s" if self._stuck_since is not None else "none"
                 shadow = (
                     f"{t - self._shadow_stuck_since:.2f}s"
                     if self._shadow_stuck_since is not None

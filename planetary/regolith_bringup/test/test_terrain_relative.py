@@ -41,9 +41,18 @@ import pytest
 # whichever test file imports it for real later in the same pytest session,
 # which is exactly what happened the first time this file was added.
 _STUBBED = []
-for _name in ("rclpy", "rclpy.node", "geometry_msgs", "geometry_msgs.msg", "nav_msgs",
-              "nav_msgs.msg", "sensor_msgs", "sensor_msgs.msg", "regolith_costmap",
-              "regolith_costmap.costmap_node"):
+for _name in (
+    "rclpy",
+    "rclpy.node",
+    "geometry_msgs",
+    "geometry_msgs.msg",
+    "nav_msgs",
+    "nav_msgs.msg",
+    "sensor_msgs",
+    "sensor_msgs.msg",
+    "regolith_costmap",
+    "regolith_costmap.costmap_node",
+):
     if _name in sys.modules:
         continue
     try:
@@ -72,7 +81,7 @@ def _plane_gradients(slope_x: float, slope_y: float):
 
 
 def _bumpy_gradients(seed: int = 0):
-    """A random but smooth gradient field - terrain with enough relief to localise on."""
+    """Build a random but smooth gradient field - terrain with enough relief to localise on."""
     n = int(WORLD_M / RES_M) + 1
     rng = np.random.default_rng(seed)
     dem = rng.normal(size=(n, n))
@@ -80,8 +89,13 @@ def _bumpy_gradients(seed: int = 0):
     # rather than per-pixel noise, which is what real terrain looks like to a
     # 0.5 m rover.
     for _ in range(6):
-        dem = (dem + np.roll(dem, 1, 0) + np.roll(dem, -1, 0)
-               + np.roll(dem, 1, 1) + np.roll(dem, -1, 1)) / 5.0
+        dem = (
+            dem
+            + np.roll(dem, 1, 0)
+            + np.roll(dem, -1, 0)
+            + np.roll(dem, 1, 1)
+            + np.roll(dem, -1, 1)
+        ) / 5.0
     dem *= 3.0 / (dem.std() + 1e-9)
     gy, gx = np.gradient(dem, RES_M)
     return gx, gy
@@ -127,8 +141,13 @@ class TestPredictedAttitude:
         """A wild candidate offset must score badly, not poison the cost surface."""
         gx, gy = _bumpy_gradients()
         roll, pitch = trn.predicted_attitude(
-            gx, gy, WORLD_M, RES_M, np.array([1e6, -1e6]), np.array([1e6, -1e6]),
-            np.array([0.0, 0.0])
+            gx,
+            gy,
+            WORLD_M,
+            RES_M,
+            np.array([1e6, -1e6]),
+            np.array([1e6, -1e6]),
+            np.array([0.0, 0.0]),
         )
         assert np.all(np.isfinite(roll)) and np.all(np.isfinite(pitch))
 
@@ -200,10 +219,17 @@ class TestMatchOffset:
         rng = np.random.default_rng(42)
         noise = math.radians(1.2)
         dx, dy, _ = trn.match_offset(
-            gx, gy, WORLD_M, RES_M, xs, ys, yaws,
+            gx,
+            gy,
+            WORLD_M,
+            RES_M,
+            xs,
+            ys,
+            yaws,
             rolls + rng.normal(0, noise, len(xs)),
             pitches + rng.normal(0, noise, len(xs)),
-            search_m=4.0, step_m=0.25,
+            search_m=4.0,
+            step_m=0.25,
         )
         assert math.hypot(dx - 1.0, dy) < 1.5
 
@@ -237,7 +263,7 @@ class TestQuaternionConversion:
         assert pitch == pytest.approx(0.0, abs=1e-9)
 
     def test_gimbal_input_is_clamped_rather_than_raising(self):
-        """asin's argument can exceed 1 by float error on a near-vertical quaternion."""
+        """The asin argument can exceed 1 by float error on a near-vertical quaternion."""
         h = math.sqrt(0.5)
         q = mock.Mock(w=h, x=0.0, y=h, z=0.0)
         _, pitch, _ = trn.rpy_from_quaternion(q)

@@ -362,9 +362,7 @@ def _generate_and_launch(context, *args, **kwargs):
         )
 
     oracle = LaunchConfiguration("localization_oracle").perform(context).lower() == "true"
-    terrain_relative = (
-        LaunchConfiguration("terrain_relative").perform(context).lower() == "true"
-    )
+    terrain_relative = LaunchConfiguration("terrain_relative").perform(context).lower() == "true"
     if oracle and terrain_relative:
         raise RuntimeError(
             "localization_oracle and terrain_relative both publish /absolute_reference/pose "

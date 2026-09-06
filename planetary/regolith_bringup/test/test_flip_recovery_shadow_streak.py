@@ -69,7 +69,7 @@ class _Tracker:
 
 
 def _run(samples, tracker=None, dt=0.2, t0=100.0):
-    """Feeds (gt_speed) samples at a fixed cadence; returns the tracker."""
+    """Feed (gt_speed) samples at a fixed cadence and return the tracker."""
     tracker = tracker or _Tracker()
     for i, gt in enumerate(samples):
         tracker.feed(t0 + i * dt, gt)

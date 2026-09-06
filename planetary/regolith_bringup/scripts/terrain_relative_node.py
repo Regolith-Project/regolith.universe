@@ -84,9 +84,8 @@ from nav_msgs.msg import Odometry
 import numpy as np
 import rclpy
 from rclpy.node import Node
-from sensor_msgs.msg import Imu
-
 from regolith_costmap.costmap_node import load_heightmap
+from sensor_msgs.msg import Imu
 
 
 def terrain_gradients(manifest: dict) -> tuple:
@@ -200,9 +199,7 @@ def match_offset(
     pred_roll, pred_pitch = predicted_attitude(
         gx, gy, world_size_m, resolution_m, cand_x, cand_y, yaws[None, :]
     )
-    cost = np.mean(
-        (pred_roll - rolls[None, :]) ** 2 + (pred_pitch - pitches[None, :]) ** 2, axis=1
-    )
+    cost = np.mean((pred_roll - rolls[None, :]) ** 2 + (pred_pitch - pitches[None, :]) ** 2, axis=1)
     best = int(np.argmin(cost))
     grid = cost.reshape(k, k)
     i, j = divmod(best, k)
@@ -241,12 +238,12 @@ class Sample(NamedTuple):
     own track costs nothing and is exact for both.
     """
 
-    dx_m: float            # world displacement since the previous sample
+    dx_m: float  # world displacement since the previous sample
     dy_m: float
-    yaw: float             # world heading, from the estimator (IMU-driven)
-    roll: float            # measured attitude, from the IMU
+    yaw: float  # world heading, from the estimator (IMU-driven)
+    roll: float  # measured attitude, from the IMU
     pitch: float
-    travelled_m: float     # odometer reading at this sample
+    travelled_m: float  # odometer reading at this sample
 
 
 def reconstruct_window(dxs, dys, anchor_x: float, anchor_y: float):
@@ -384,9 +381,7 @@ class TerrainRelativeNode(Node):
         self._min_margin = float(self.get_parameter("min_margin").value)
         self._consistency_m = float(self.get_parameter("consistency_m").value)
         self._max_step_m = float(self.get_parameter("max_step_m").value)
-        self._correction_interval_m = float(
-            self.get_parameter("correction_interval_m").value
-        )
+        self._correction_interval_m = float(self.get_parameter("correction_interval_m").value)
         self._variance = float(self.get_parameter("position_variance").value)
 
         manifest_path = Path(self.get_parameter("manifest_path").value)
@@ -426,10 +421,10 @@ class TerrainRelativeNode(Node):
         # like a perfectly good path; nothing in the cost surface can tell.
         self._samples = []
         self._travelled_m = 0.0
-        self._track = None      # this node's own absolute position estimate
+        self._track = None  # this node's own absolute position estimate
         self._yaw = None
         self._last_odom_stamp = None
-        self._pending_dx = 0.0   # track displacement since the last buffered sample
+        self._pending_dx = 0.0  # track displacement since the last buffered sample
         self._pending_dy = 0.0
         self._last_corrected_at_m = None
         self._last_xy = None
@@ -446,9 +441,7 @@ class TerrainRelativeNode(Node):
         self._report_every_m = 5.0
         self._last_report_m = -1e9
 
-        self._pub = self.create_publisher(
-            PoseWithCovarianceStamped, "/absolute_reference/pose", 10
-        )
+        self._pub = self.create_publisher(PoseWithCovarianceStamped, "/absolute_reference/pose", 10)
         self.create_subscription(Imu, "/imu", self._on_imu, 20)
         self.create_subscription(Odometry, "/odom", self._on_odom, 20)
         self.create_subscription(Odometry, "/odometry/filtered", self._on_estimate, 20)
@@ -643,8 +636,11 @@ class TerrainRelativeNode(Node):
         # window of travel ago, which is the last one built on substantially
         # different terrain.
         independent_m = self._window_m * 0.5
-        if (self._last_offset is not None and self._last_offset_at_m is not None
-                and self._travelled_m - self._last_offset_at_m < independent_m):
+        if (
+            self._last_offset is not None
+            and self._last_offset_at_m is not None
+            and self._travelled_m - self._last_offset_at_m < independent_m
+        ):
             pass  # too soon to be a second opinion; keep the older one to compare against
         elif self._last_offset is not None:
             disagreement = math.hypot(dx - self._last_offset[0], dy - self._last_offset[1])
