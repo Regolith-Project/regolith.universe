@@ -81,3 +81,52 @@ seed:=42`, then in another terminal:
   ```
 
   `demo.mp4` is written to the directory `gz sim` was started from.
+
+  ### Filming the rover (cine_camera / cine_light)
+
+  `record_video:=true` records what the rover's *navigation* camera sees, and
+  that camera is mounted at the front edge of the chassis pointing away, so
+  nothing of the rover is ever in frame. Footage of a moving vehicle with no
+  part of the vehicle visible reads as a still photograph - there is no
+  foreground to give parallax against the terrain.
+
+  `cine_camera:=onboard|chase|both` adds a SEPARATE 1280x720 camera whose only
+  job is filming, leaving the navigation cameras' pose and intrinsics alone
+  (they are load-bearing - the costmap, VO and every M3/M4 number depend on
+  them, so footage requirements must never be met by moving them):
+
+  | mode | mount | what it shows |
+  |---|---|---|
+  | `onboard` | mast, 0.42 m above the chassis, looking forward over the deck | first-person driving with the deck and both front wheels in the bottom of frame |
+  | `chase` | boom, 1.6 m behind and 1.0 m above, tilted down | the whole rover in its terrain - what the body does, e.g. bogging down and escaping |
+  | `both` | both of the above at once | one run filmed from two angles; worth the real-time-factor cost when the thing you want on film happens when it happens and cannot be re-staged |
+
+  Each has its own recorder service - `/rover/cine/record_video` and
+  `/rover/chase/record_video` - started and stopped exactly like the onboard
+  one above.
+
+  `cine_light:=true` raises the sun to 32 degrees and lifts the scene ambient
+  off the floor. The shipped lighting (a 12 degree sun over a near-black
+  ambient) is what a low lunar sun actually looks like and what every
+  measurement in this repo was taken under, but on video it swallows the
+  surface texture. It is render-only: the heightmap, the rocks, the collision
+  boxes and the costmap are all generated before the light is written, so a
+  clip recorded with it is driving the same world as a normal run.
+
+  Two things to know before reading footage recorded this way:
+
+  - **The clip is paced by wall clock, not sim time.** The recorder writes
+    frames as they render, and this world runs at 0.06-0.10x real time with a
+    720p camera attached, so the raw file shows the rover crawling. Speeding
+    it up by 1/RTF is what makes the motion true to sim time - it is a
+    correction, not an exaggeration. Measure the factor from the run rather
+    than guessing it.
+  - **Not every "stuck" the recovery node reports is a wedge.** Its
+    `commanded_speed` includes `|ang_z| * half_track` while `gt_speed`
+    measures translation only, so a rover pivoting in place to face a new leg
+    reports the exact signature `commanded=0.0690, gt_speed~0` and fires an
+    escape after 3 s. That asymmetry is deliberate and a symmetric fix was
+    measured and rejected (PROGRESS.md - it would break detection of the real
+    wedges), but it means footage of "an immobilisation" has to be chosen by
+    checking `stuck_debug`: a genuine wedge has the rover commanded FORWARD
+    (commanded well above 0.069) and not moving.

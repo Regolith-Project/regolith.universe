@@ -192,7 +192,74 @@ def _bake_rover_model_sdf(rover_urdf_path: Path, spawn_z: float) -> str:
     )
 
 
+CINE_RIG_MODEL_NAME = "cine_rig"
+
+
+def _cine_rig_sdf(spawn_x: float, spawn_y: float, spawn_z: float, hfov: float = 1.3) -> str:
+    """A free-flying, camera-only model for documentary-style footage of a run -
+    chase/orbit/crane/track, driven each tick by camera_rig_node.py via gz-sim's
+    `/world/<world>/set_pose` service (see that node's module docstring for the full
+    mechanism writeup and how it was verified on this install).
+
+    Deliberately NOT attached to the rover by any joint, and does not touch the
+    rover's mass, inertia, collisions or sensors - the "frozen physics" constraint
+    that governs everything else in this file. It is a plain <static> model so
+    set_pose only ever moves a visual/camera, never anything the physics engine
+    steps; confirmed on this gz-sim 8.14 install that a static model's pose CAN be
+    teleported this way (it was worth checking - a plausible silent no-op).
+
+    Initial pose here barely matters: camera_rig_node.py takes over within its
+    first tick once /ground_truth/pose starts arriving. It is placed a few metres
+    above the spawn point purely so nothing looks wrong in the sliver of time
+    before that.
+
+    far=6000, matching scripts/render_still.py's own cine rigs: the sky dome and
+    far-field horizon extend out past 4000+ m and would clip/vanish inside a
+    shorter far plane - see that script's comment on the same constant.
+
+    update_rate=30, matching camera_rig_node.py's own default control-tick rate
+    (`update_rate_hz`) - the two MUST match, not just be close. A 30 fps clip built
+    from a sensor whose pose only changes at 15 Hz repeats every other frame at the
+    same pose, which is not 30 fps motion no matter what the container says - see
+    docs/media/README.md's "frame count, not container fps" note, where exactly
+    this was measured and caught on an earlier 15 Hz take (26 distinct frames in a
+    1.04 s / ~31-output-frame clip - visibly stuttery, would only get worse on a
+    longer hero take). 30 Hz costs more render time per simulated second than 15
+    did; that cost is measured and reported in the same README section.
+
+    `hfov` defaults to 1.3 (chase/crane/track's working value, confirmed good framing
+    on the approved hero chase clip) but the orbit shot passes a narrower value - a
+    first orbit take at radius 9 m / height 4 m / hfov 1.3 put the rover at ~3% of
+    frame width, technically clean footage that failed at its one job as a beauty
+    shot (see docs/media/README.md). Narrowing hfov and tightening orbit_radius/
+    orbit_height together (rather than either alone) gets the rover back to a
+    16-30%-of-frame-width hero size while keeping enough standoff to still read as
+    an orbit, not a close-up - checked with a still render before the reshoot.
+    """
+    return f"""    <model name="{CINE_RIG_MODEL_NAME}">
+      <static>true</static>
+      <pose>{spawn_x:.3f} {spawn_y - 3.0:.3f} {spawn_z + 2.0:.3f} 0 0.3 0</pose>
+      <link name="link">
+        <sensor name="cine_rig_cam" type="camera">
+          <always_on>1</always_on>
+          <update_rate>30</update_rate>
+          <topic>cine_rig</topic>
+          <camera>
+            <horizontal_fov>{hfov:.4f}</horizontal_fov>
+            <image><width>1280</width><height>720</height></image>
+            <clip><near>0.05</near><far>6000</far></clip>
+          </camera>
+          <plugin filename="gz-sim-camera-video-recorder-system" name="gz::sim::systems::CameraVideoRecorder">
+            <service>rover/rig/record_video</service>
+          </plugin>
+        </sensor>
+      </link>
+    </model>
+"""
+
+
 def _generate_and_launch(context, *args, **kwargs):
+    import dataclasses
     import json
 
     from regolith_terrain_gen.cli import default_output_dir
@@ -226,6 +293,24 @@ def _generate_and_launch(context, *args, **kwargs):
             f"Launch argument 'seed' must be a non-negative integer, got '{raw_seed}'"
         ) from None
     cfg = TerrainConfig(seed=seed)
+    # Media capture only: the shipped lighting is a 12-degree sun over a near-black
+    # ambient, which is what a low lunar sun actually looks like and what every
+    # measurement in this repo was taken under. It also renders most of the surface
+    # texture as unreadable shadow on video. cine_light raises the sun and lifts the
+    # ambient off the floor for footage; it is render-only (the heightmap, the rocks,
+    # the collision boxes and the costmap are all generated before the light is
+    # written) so a clip recorded with it is driving the same world as a normal run.
+    if LaunchConfiguration("cine_light").perform(context).lower() == "true":
+        # 25 deg sun / 0.12 ambient (a first pass) blew the regolith surface out to
+        # near-white - real lunar regolith albedo is ~0.08-0.14, closer to worn
+        # asphalt than concrete; Apollo photos read bright because of direct
+        # unfiltered sun and camera exposure, not because the ground is pale. 18
+        # deg / 0.07 keeps the low-sun long-shadow character and enough fill to
+        # read the surface on video, without crushing shadows to flat black or
+        # blowing the lit faces past a real regolith tone.
+        cfg = dataclasses.replace(
+            cfg, sun_elevation_deg=18.0, scene_ambient=(0.07, 0.07, 0.08)
+        )
     output_dir = default_output_dir(seed)
     world_sdf_path = generate_world(cfg, output_dir, start_paused=False)
     manifest_path = output_dir / "manifest.json"
@@ -240,7 +325,10 @@ def _generate_and_launch(context, *args, **kwargs):
         FindPackageShare("regolith_rover_description").find("regolith_rover_description")
         + "/urdf/regolith_rover.urdf.xacro"
     )
-    urdf_xml = xacro.process_file(xacro_path, mappings={"record_video": record_video}).toxml()
+    cine_camera = LaunchConfiguration("cine_camera").perform(context)
+    urdf_xml = xacro.process_file(
+        xacro_path, mappings={"record_video": record_video, "cine_camera": cine_camera}
+    ).toxml()
     rover_urdf_path = output_dir / "rover.urdf"
     rover_urdf_path.write_text(urdf_xml)
 
@@ -254,6 +342,20 @@ def _generate_and_launch(context, *args, **kwargs):
     world_sdf_path.write_text(
         world_sdf_path.read_text().replace("</world>", f"{rover_model_sdf}\n  </world>", 1)
     )
+
+    # Cinematic camera rig - opt-in, off ("none") by default, so a normal run is
+    # unaffected. See _cine_rig_sdf's docstring and camera_rig_node.py for the
+    # mechanism. Spliced in the same way as the rover above, before gz_sim starts.
+    cine_rig = LaunchConfiguration("cine_rig").perform(context)
+    if cine_rig not in ("none", "", "false"):
+        spawn_zone = manifest["spawn_zone"]
+        # orbit needs a narrower hfov than chase/crane/track - see _cine_rig_sdf's
+        # docstring: at the shared 1.3 rad the rover read as a ~3%-of-frame speck.
+        rig_hfov = 0.7 if cine_rig == "orbit" else 1.3
+        rig_sdf = _cine_rig_sdf(spawn_zone["x_m"], spawn_zone["y_m"], spawn_z, hfov=rig_hfov)
+        world_sdf_path.write_text(
+            world_sdf_path.read_text().replace("</world>", f"{rig_sdf}\n  </world>", 1)
+        )
 
     headless = LaunchConfiguration("headless").perform(context)
     gz_flags = "-r -s" if headless.lower() == "true" else "-r"
@@ -412,11 +514,35 @@ def _generate_and_launch(context, *args, **kwargs):
     # Terrain-relative navigation: the earned version of the relay above. Reads
     # the same a-priori terrain manifest the costmap does - on a real mission,
     # an orbital DEM - and matches IMU attitude against it for an absolute fix.
+    #
+    # The dem_* arguments deliberately worsen that map. They default to zero (the
+    # map as generated), and are the only way to run this stack on a map with a
+    # mission's defects rather than on the generator's own heightmap read exactly.
+    dem_post_m = float(LaunchConfiguration("dem_post_m").perform(context))
+    dem_noise_m = float(LaunchConfiguration("dem_noise_m").perform(context))
+    dem_shift_m = float(LaunchConfiguration("dem_shift_m").perform(context))
+    dem_noise_seed = int(LaunchConfiguration("dem_noise_seed").perform(context))
+    dem_prefilter_m = float(LaunchConfiguration("dem_prefilter_m").perform(context))
+    if terrain_relative and (dem_post_m or dem_noise_m or dem_shift_m):
+        print(
+            f"[hello_moon.launch] A-PRIORI DEM DEGRADED: posts {dem_post_m} m, noise "
+            f"{dem_noise_m} m, registration shift {dem_shift_m} m (seed {dem_noise_seed}). "
+            "This run's localisation numbers are NOT perfect-map numbers.",
+            flush=True,
+        )
     terrain_relative_node = Node(
         package="regolith_bringup",
         executable="terrain_relative_node.py",
         output="screen",
-        parameters=[{"manifest_path": str(manifest_path), "use_sim_time": True}],
+        parameters=[{
+            "manifest_path": str(manifest_path),
+            "use_sim_time": True,
+            "dem_post_m": dem_post_m,
+            "dem_noise_m": dem_noise_m,
+            "dem_shift_m": dem_shift_m,
+            "dem_noise_seed": dem_noise_seed,
+            "dem_prefilter_m": dem_prefilter_m,
+        }],
         condition=IfCondition(LaunchConfiguration("terrain_relative")),
     )
 
@@ -460,6 +586,9 @@ def _generate_and_launch(context, *args, **kwargs):
     # upright to its last known-good pose via gz set_pose rather than leaving the
     # demo dead. Explicitly a simulated self-right - see flip_recovery_node.py.
     stuck_debug = LaunchConfiguration("stuck_debug").perform(context).lower() == "true"
+    onboard_only_recovery = (
+        LaunchConfiguration("onboard_only_recovery").perform(context).lower() == "true"
+    )
     flip_recovery_node = Node(
         package="regolith_bringup",
         executable="flip_recovery_node.py",
@@ -470,6 +599,7 @@ def _generate_and_launch(context, *args, **kwargs):
                 "world_name": WORLD_NAME,
                 "model_name": ROVER_NAME,
                 "stuck_debug": stuck_debug,
+                "onboard_only": onboard_only_recovery,
             }
         ],
     )
@@ -501,6 +631,27 @@ def _generate_and_launch(context, *args, **kwargs):
             }
         ],
         condition=IfCondition(LaunchConfiguration("markers")),
+    )
+
+    # Cinematic camera rig driver - see _cine_rig_sdf above and camera_rig_node.py.
+    # Opt-in (cine_rig defaults to "none"); excluded from shutdown_on_unexpected_exit
+    # below for the same reason mission_markers is - a filming problem should never
+    # end a mission run.
+    camera_rig_node = Node(
+        package="regolith_bringup",
+        executable="camera_rig_node.py",
+        output="screen",
+        parameters=[
+            {
+                "use_sim_time": True,
+                "world_name": WORLD_NAME,
+                "rig_model_name": CINE_RIG_MODEL_NAME,
+                "shot": cine_rig,
+            }
+        ],
+        condition=IfCondition(
+            PythonExpression(["'", LaunchConfiguration("cine_rig"), "' not in ('none', '', 'false')"])
+        ),
     )
 
     rviz_config = (
@@ -570,6 +721,7 @@ def _generate_and_launch(context, *args, **kwargs):
         flip_recovery_node,
         tour_mission,
         mission_markers,
+        camera_rig_node,
         rviz,
         *shutdown_on_unexpected_exit,
     ]
@@ -617,6 +769,49 @@ def generate_launch_description() -> LaunchDescription:
                 "median, but a replay is not a run. See PROGRESS.md",
             ),
             DeclareLaunchArgument(
+                "dem_post_m",
+                default_value="0.0",
+                description="Coarsen the a-priori DEM to this post spacing before matching "
+                "(0 = as generated). Only affects terrain_relative. Replayed offline, "
+                "detail loss degrades the fix GRACEFULLY - the matcher gets quieter "
+                "rather than more wrong, because coarser terrain is more ambiguous and "
+                "the margin gate rejects more windows. See PROGRESS.md",
+            ),
+            DeclareLaunchArgument(
+                "dem_noise_m",
+                default_value="0.0",
+                description="Add spatially-correlated elevation error to the a-priori DEM, "
+                "sigma in metres before smoothing (the node logs the realised rms). "
+                "Only affects terrain_relative.",
+            ),
+            DeclareLaunchArgument(
+                "dem_shift_m",
+                default_value="0.0",
+                description="Displace the a-priori DEM by this distance on both axes: "
+                "registration error, the defect the offline replay says is FATAL. A 3 m "
+                "offset made the fix worse than dead reckoning while publishing as many "
+                "fixes at full confidence, because nothing about the cost surface is "
+                "wrong - the map is simply not where it says it is. Only affects "
+                "terrain_relative.",
+            ),
+            DeclareLaunchArgument(
+                "dem_noise_seed",
+                default_value="0",
+                description="RNG seed for dem_noise_m, so a degraded map is reproducible.",
+            ),
+            DeclareLaunchArgument(
+                "dem_prefilter_m",
+                default_value="0.0",
+                description="Smooth the a-priori DEM by this length BEFORE matching. Not a "
+                "defect - the mitigation for one. The matcher reads slope, so height "
+                "error of sigma correlated over L arrives as ~sigma/L of slope error, "
+                "and lengthening L suppresses it at the same rate it costs signal. In "
+                "replay this recovers 0.1 m of DEM vertical error from 6.16 m to 1.73 m "
+                "median, but costs 0.71 -> 1.66 m on a map that was already good. OFF by "
+                "default for that reason: it pays only when the DEM's vertical accuracy "
+                "is known to be poor.",
+            ),
+            DeclareLaunchArgument(
                 "visual_odometry",
                 default_value="false",
                 description="RGB-D visual odometry feeding body-frame vy to the EKF. OFF by "
@@ -659,6 +854,44 @@ def generate_launch_description() -> LaunchDescription:
                 "headless",
                 default_value="false",
                 description="Run Gazebo server-only (-s), no GUI window - for unattended/automated runs",
+            ),
+            DeclareLaunchArgument(
+                "onboard_only_recovery",
+                default_value="false",
+                description="SIM-TO-REAL. Makes flip/stuck recovery read only what a real "
+                "rover has - IMU attitude and the EKF estimate - instead of "
+                "/ground_truth/pose, and stops it teleporting the rover upright on a flip. "
+                "Ground truth is still logged beside every verdict for scoring. Default "
+                "false: the shipped numbers were all measured with the oracle",
+            ),
+            DeclareLaunchArgument(
+                "cine_camera",
+                default_value="none",
+                description="MEDIA CAPTURE ONLY. Adds a second, recording-only camera to the "
+                "rover - 'onboard' (mast over the deck, chassis and front wheels in frame) or "
+                "'chase' (boom behind and above, whole rover in frame). Leaves the onboard "
+                "perception cameras untouched. Record it via the /rover/cine/record_video "
+                "gz service - see regolith_bringup's README",
+            ),
+            DeclareLaunchArgument(
+                "cine_rig",
+                default_value="none",
+                description="MEDIA CAPTURE ONLY. Adds a free-flying camera rig, decoupled from "
+                "the rover (no joint, no shared link, does not touch its mass/inertia/"
+                "collisions/sensors) and driven each tick via gz-sim's set_pose service by "
+                "camera_rig_node.py - 'chase' (smoothed follow, behind and above), 'orbit' "
+                "(slow circle around the rover), 'crane' (low/close reveal that rises and "
+                "pulls back), or 'track' (fixed lockoff, camera pans to follow the rover past "
+                "it). Default 'none': off, no extra camera, no extra node. Record it via the "
+                "/rover/rig/record_video gz service, same pattern as cine_camera - see "
+                "regolith_bringup's README",
+            ),
+            DeclareLaunchArgument(
+                "cine_light",
+                default_value="false",
+                description="MEDIA CAPTURE ONLY. Raises the sun to 32 degrees and lifts the "
+                "scene ambient so surface texture is legible on video. Render-only - terrain, "
+                "rocks and costmap are unchanged",
             ),
             DeclareLaunchArgument(
                 "record_video",
