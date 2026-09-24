@@ -126,7 +126,11 @@ def mesh_surface_lookup(surface_yx: np.ndarray, cfg: TerrainConfig, stride: int 
 
 
 def save_terrain_mesh_obj(
-    surface_yx: np.ndarray, cfg: TerrainConfig, path: Path, stride: int = None
+    surface_yx: np.ndarray,
+    cfg: TerrainConfig,
+    path: Path,
+    stride: int = None,
+    uv_world_size_m: float = None,
 ) -> dict:
     """Write the visual surface as an OBJ in world coordinates.
 
@@ -134,8 +138,13 @@ def save_terrain_mesh_obj(
     ``build_heightmap`` returns it. Vertices carry their own world x/y, so nothing
     downstream has to know an axis convention.
 
-    Texture coordinates tile the surface textures every ``cfg.texture_tile_size_m``,
-    which is what the ``<heightmap><texture><size>`` element used to do.
+    Texture coordinates, by default, tile the surface textures every
+    ``cfg.texture_tile_size_m`` - what the old ``<heightmap><texture><size>`` element
+    used to do. Passing `uv_world_size_m` switches to a SINGLE 1:1 bake spanning that
+    many metres (normally `cfg.world_size_m`, i.e. the whole world once, u/v in [0, 1]) -
+    see textures_world.py for why a repeating tile can't carry macro features aligned to
+    the real terrain, and generate.py for which mode each caller uses. Both write the
+    same OBJ format; only the `vt` values differ.
     """
     stride = cfg.terrain_mesh_stride if stride is None else stride
     idx = terrain_mesh_posts(surface_yx, cfg, stride)
@@ -157,7 +166,10 @@ def save_terrain_mesh_obj(
     normals = np.stack([-dzdx, -dzdy, np.ones_like(z)], axis=-1)
     normals /= np.linalg.norm(normals, axis=-1, keepdims=True)
 
-    uv = coords / cfg.texture_tile_size_m
+    if uv_world_size_m is None:
+        uv = coords / cfg.texture_tile_size_m
+    else:
+        uv = coords / uv_world_size_m + 0.5
 
     lines = [
         "# Regolith lunar terrain - drawn surface, world coordinates, metres.",

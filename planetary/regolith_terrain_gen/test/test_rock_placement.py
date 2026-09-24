@@ -47,11 +47,17 @@ def test_rock_collision_is_not_a_mesh(tmp_path):
     # Exactly one working collision proxy per rock...
     assert text.count("<ellipsoid>") == rock_count
 
-    # ...while the rock the user SEES is still the detailed mesh, one visual per rock.
+    # ...while the rock the user SEES is still a detailed mesh, one visual per rock.
     # The terrain's own visual is a mesh too now (terrain_mesh.py), so match on the
-    # rocks/ mesh directory rather than counting every <mesh> visual in the world.
+    # rocks mesh directories rather than counting every <mesh> visual in the world.
+    # "/rocks_visual/" (rocks_visual.py's shape-varied meshes, fit inside the frozen
+    # ellipsoid - see worldgen._rock_model_sdf) is what ships today; "/rocks/" (the
+    # original displaced-icosphere meshes) is kept as the fallback path and matched too
+    # so this test does not depend on which one a given call site chose.
     visual_blocks = [blk.split("</visual>")[0] for blk in text.split("<visual")[1:]]
-    rock_visual_meshes = [b for b in visual_blocks if "<mesh>" in b and "/rocks/" in b]
+    rock_visual_meshes = [
+        b for b in visual_blocks if "<mesh>" in b and ("/rocks/" in b or "/rocks_visual/" in b)
+    ]
     assert len(rock_visual_meshes) == rock_count
 
 

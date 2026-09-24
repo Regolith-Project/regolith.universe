@@ -188,7 +188,20 @@ def detached_columns(png: Path):
 
 @pytest.mark.render
 def test_no_rock_stands_in_the_sky_at_range(tmp_path):
-    cfg = TerrainConfig(seed=42)
+    # farfield_enabled=False: the far-field horizon mesh (worldgen/farfield.py, visual
+    # only, gated by this same flag) sits well beyond the 200 m world this test's own
+    # geometry check cares about, but its own jagged silhouette against the sky - real
+    # terrain relief, correctly rendered - produces exactly the same "sky, object, sky,
+    # ground" column pattern this detector uses to flag a floating rock (see
+    # _sky_mask's "the sky is the world's flat background_color" assumption above: still
+    # true, but the far-field's silhouette is not flat, and this scanner has no notion
+    # of "distant terrain" vs "a boulder"). Measured directly: with the far-field left
+    # on, this test saw 824 detached columns (widest 42 px) on a world with NO rocks
+    # lifted at all - a false positive from the far-field's own geometry, not a floating
+    # rock. With it off, the same unlifted world reads 0 hits, as it should. Disabling it
+    # here removes that confound from the SOURCE (the test's own world) rather than
+    # loosening the detector, which stays exactly as strict as it always was.
+    cfg = TerrainConfig(seed=42, farfield_enabled=False)
     world = generate_world(cfg, tmp_path / "world", start_paused=False)
     shot = _capture(world, _horizon_pose(cfg), tmp_path / "horizon.png")
 
@@ -205,7 +218,11 @@ def test_no_rock_stands_in_the_sky_at_range(tmp_path):
 @pytest.mark.render
 def test_the_check_can_actually_fail(tmp_path):
     """Guards the guard, by the standard this package learned the hard way: a check for floating rocks that has never been seen to fail is not evidence of anything."""
-    cfg = TerrainConfig(seed=42)
+    # farfield_enabled=False - see the sibling test's comment above: with it on, the
+    # far-field's own silhouette already saturates this detector (824 hits) whether or
+    # not any rock is lifted, so this test would pass or fail on far-field noise rather
+    # than on whether a genuinely lifted rock is detected. Off, it measures what it says.
+    cfg = TerrainConfig(seed=42, farfield_enabled=False)
     world = generate_world(cfg, tmp_path / "world", start_paused=False)
 
     # Lift every boulder half a metre, in the SDF gz is about to render.

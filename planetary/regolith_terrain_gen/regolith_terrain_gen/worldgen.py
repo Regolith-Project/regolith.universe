@@ -7,7 +7,14 @@ from pathlib import Path
 
 import numpy as np
 from regolith_terrain_gen.config import TerrainConfig
+from regolith_terrain_gen.earth import earth_model_sdf
+from regolith_terrain_gen.farfield import farfield_model_sdf
 from regolith_terrain_gen.scatter import RockInstance
+
+# See _rock_model_sdf's docstring: a constant extra sink applied ONLY to the new visual
+# rock mesh's own local pose, never to the frozen collision ellipsoid or rock.z_m.
+VISUAL_SEATING_MARGIN_M = 0.06
+from regolith_terrain_gen.sky import sky_model_sdf
 
 _GUI_BLOCK = """    <gui fullscreen="false">
       <plugin filename="MinimalScene" name="3D View">
@@ -90,13 +97,55 @@ def _sun_direction(elevation_deg: float, azimuth_deg: float) -> tuple:
     return dx, dy, dz
 
 
-def _rock_model_sdf(rock: RockInstance, index: int, mesh_dir: Path) -> str:
-    mesh_uri = f"file://{mesh_dir / (rock.variant + '.obj')}"
+def _rock_model_sdf(
+    rock: RockInstance, index: int, mesh_dir: Path, visual_mesh_paths: dict = None, tint: tuple = None
+) -> str:
+    """Collision stays an ELLIPSOID, unconditionally, sized from `rock.collision_radii_m`
+    - <mesh> collision is silently a no-op in this gz-physics install (verified - a probe
+    drops straight through one). See rocks.RockVariant.
+
+    The VISUAL mesh, if `visual_mesh_paths` supplies one for this rock's variant, is the
+    new shape-varied mesh from rocks_visual.py - fit inside this exact ellipsoid by
+    construction (see rocks_visual.fit_to_collision_envelope and
+    test_rock_visual_meshes_fit_frozen_collision). Falls back to the original
+    displaced-icosphere mesh in `mesh_dir` if no visual variant is supplied, so this
+    function still works standalone (tests, older callers).
+
+    `tint` (r, g, b multipliers) gives each rock instance its own diffuse variation
+    instead of one flat grey for all 190 - see rocks_visual.rock_albedo_tints.
+
+    VISUAL_SEATING_MARGIN_M: only applied when a NEW visual mesh is in play, and only to
+    the <visual>'s own local pose - never to <collision> or to rock.z_m, both of which
+    stay exactly as frozen. It exists because a differently-shaped visual mesh (not the
+    exact mesh seat_rock_z computed rock.z_m against) can, for the same frozen z_m/
+    rotation, come up a little short of the original mesh's own lowest reach: measured on
+    seed 7, 2 of 190 rocks came up 1.5-1.8 cm short even with the shape-family and
+    ellipsoid-fit precautions in rocks_visual.py (see that module's docstring). Sinking
+    the VISUAL mesh a further constant amount absorbs that residual with margin - it is
+    the same kind of deliberate under-drawing embed_frac already does, just applied to
+    the newer, second mesh instead of the original. Verified by
+    test_no_visual_rock_hangs_above_the_drawn_ground (test_rock_visual_seating_and_
+    containment.py): 0 rocks float across seeds 42/7/123 with this in place at 0.06 m -
+    the surface-budget rebalance in terrain_detail.py moved the residual enough that the
+    margin needed re-measuring and was raised from an earlier 0.04 m; see PROGRESS.md's
+    terrain-realism-pass note for the actual per-seed worst-case gap.
+    """
+    if visual_mesh_paths and rock.variant in visual_mesh_paths:
+        mesh_uri = f"file://{visual_mesh_paths[rock.variant]}"
+        visual_pose = f"<pose>0 0 {-VISUAL_SEATING_MARGIN_M:.3f} 0 0 0</pose>"
+    else:
+        mesh_uri = f"file://{mesh_dir / (rock.variant + '.obj')}"
+        visual_pose = ""
     rx, ry, rz = rock.collision_radii_m
-    # Collision is an ELLIPSOID, not the <mesh> used for the visual: <mesh> collision is
-    # silently a no-op in this gz-physics install (verified - a probe drops straight
-    # through one), so the rover used to drive through every boulder. Correctness only:
-    # the swap costs and saves essentially nothing. See rocks.RockVariant.
+    tr, tg, tb = tint if tint is not None else (1.0, 1.0, 1.0)
+    # Base raised from (0.32, 0.30, 0.29): measured against renders, that base plus a
+    # narrow +/-10% tint left all 190 boulders reading as near-black silhouettes against
+    # the ~0.40-0.54 albedo ground - real lunar basalt boulders span a wider range than
+    # that, some notably brighter (weathered/dusty) than the soil around them, some
+    # darker (fresher, less regolith cover). rock_albedo_variation is now wide enough
+    # (see config.py) that tint alone produces that spread; the base only needed to move
+    # up, not the spread widened further here.
+    dr, dg, db = 0.40 * tr, 0.38 * tg, 0.36 * tb
     return f"""    <model name="rock_{index}">
       <static>true</static>
       <pose>{rock.x_m:.3f} {rock.y_m:.3f} {rock.z_m:.3f} {rock.roll_rad:.4f} {rock.pitch_rad:.4f} {rock.yaw_rad:.4f}</pose>
@@ -110,6 +159,7 @@ def _rock_model_sdf(rock: RockInstance, index: int, mesh_dir: Path) -> str:
           <surface><friction><ode><mu>1.1</mu><mu2>1.1</mu2></ode></friction></surface>
         </collision>
         <visual name="visual">
+          {visual_pose}
           <geometry>
             <mesh>
               <uri>{mesh_uri}</uri>
@@ -117,11 +167,49 @@ def _rock_model_sdf(rock: RockInstance, index: int, mesh_dir: Path) -> str:
             </mesh>
           </geometry>
           <material>
-            <diffuse>0.32 0.30 0.29 1</diffuse>
+            <diffuse>{dr:.3f} {dg:.3f} {db:.3f} 1</diffuse>
             <specular>0.1 0.1 0.1 1</specular>
             <pbr>
               <metal>
                 <roughness>0.92</roughness>
+                <metalness>0.0</metalness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+      </link>
+    </model>
+"""
+
+
+def _pebble_field_model_sdf(pebble_field_obj: Path) -> str:
+    """Thousands of small stones welded into ONE mesh - one draw call, no collision at
+    all (visual-only ground break-up at rover scale; see rocks_visual.save_pebble_field_obj
+    and config.py's pebble_* fields for why that is safe)."""
+    return f"""    <model name="pebble_field">
+      <static>true</static>
+      <link name="link">
+        <visual name="visual">
+          <geometry>
+            <mesh>
+              <uri>file://{pebble_field_obj}</uri>
+            </mesh>
+          </geometry>
+          <material>
+            <!-- Brighter than the ground (0.40-0.54 albedo) and noticeably brighter than
+                 the boulders (0.29-0.45 - see _rock_model_sdf): real fine regolith/dust
+                 scatters light more diffusely per unit area than a boulder's more
+                 shadowed facets, and at the size these render (a handful of pixels at
+                 orbital/terrain range) anything darker than the ground disappears into
+                 flat black specks against it, which is what an earlier, dimmer value
+                 (0.36-0.44) measured as in a render - "black specks" rather than stones.
+                 Kept out of the true 0.40-0.54 ground albedo band so pebbles still read
+                 as distinct grains rather than invisible against the terrain. -->
+            <diffuse>0.52 0.50 0.47 1</diffuse>
+            <specular>0.12 0.12 0.12 1</specular>
+            <pbr>
+              <metal>
+                <roughness>0.78</roughness>
                 <metalness>0.0</metalness>
               </metal>
             </pbr>
@@ -187,6 +275,12 @@ def build_world_sdf(
     terrain_mesh_obj: Path,
     elevation_lookup=None,
     start_paused: bool = True,
+    sky_texture_path: Path = None,
+    sky_mesh_obj: Path = None,
+    farfield_mesh_obj: Path = None,
+    rock_visual_mesh_paths: dict = None,
+    rock_tints=None,
+    pebble_field_obj: Path = None,
 ) -> str:
     # No heightmap_png / z_min / z_span here any more: the ground is drawn from
     # terrain_mesh_obj, which carries its own absolute world coordinates. The PNG's
@@ -195,7 +289,31 @@ def build_world_sdf(
     dx, dy, dz = _sun_direction(cfg.sun_elevation_deg, cfg.sun_azimuth_deg)
     camera_pose = _gui_camera_pose(cfg, elevation_lookup)
 
-    rock_models = "\n".join(_rock_model_sdf(rock, i, rock_mesh_dir) for i, rock in enumerate(rocks))
+    rock_models = "\n".join(
+        _rock_model_sdf(
+            rock,
+            i,
+            rock_mesh_dir,
+            visual_mesh_paths=rock_visual_mesh_paths,
+            tint=tuple(rock_tints[i]) if rock_tints is not None else None,
+        )
+        for i, rock in enumerate(rocks)
+    )
+    if pebble_field_obj is not None:
+        rock_models += "\n" + _pebble_field_model_sdf(pebble_field_obj)
+
+    # Sky/Earth/far-field horizon - all VISUAL ONLY (no <collision>, never written to
+    # manifest.json - see sky.py/earth.py/farfield.py). Each is gated on both its own
+    # cfg.*_enabled flag and generate.py actually having built the asset it needs
+    # (sky_texture_path / farfield_mesh_obj), so build_world_sdf still works standalone
+    # (e.g. in tests) without those assets on disk.
+    extra_models = ""
+    if cfg.sky_enabled and sky_texture_path is not None and sky_mesh_obj is not None:
+        extra_models += sky_model_sdf(cfg, sky_texture_path, sky_mesh_obj)
+    if cfg.earth_enabled:
+        extra_models += earth_model_sdf(cfg)
+    if cfg.farfield_enabled and farfield_mesh_obj is not None:
+        extra_models += farfield_model_sdf(cfg, farfield_mesh_obj, texture_pngs)
 
     return f"""<?xml version="1.0"?>
 <sdf version="1.10">
@@ -213,7 +331,7 @@ def build_world_sdf(
     </plugin>
 
     <scene>
-      <ambient>0.06 0.06 0.07 1</ambient>
+      <ambient>{cfg.scene_ambient[0]:.3f} {cfg.scene_ambient[1]:.3f} {cfg.scene_ambient[2]:.3f} 1</ambient>
       <background>0.01 0.01 0.02 1</background>
       <shadows>true</shadows>
       <grid>false</grid>
@@ -273,6 +391,7 @@ def build_world_sdf(
     </model>
 
 {rock_models}
+{extra_models}
 {_GUI_BLOCK.format(camera_pose=camera_pose, start_paused=str(start_paused).lower())}
   </world>
 </sdf>
