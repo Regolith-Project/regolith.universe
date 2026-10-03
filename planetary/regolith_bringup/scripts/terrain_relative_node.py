@@ -55,11 +55,16 @@ between 12 and 20 m is inside what 25 runs can resolve.
 
 HONEST LIMITS, stated before any result is claimed:
 
-- The DEM is the generator's own heightmap, read exactly, so the map is perfect.
-  A real orbital DEM carries registration error and coarser resolution. Degrading
-  it deliberately and re-measuring is the obvious next experiment and it has NOT
-  been run - there is no parameter for it yet. Until there is, every number above
-  is a best case on map quality.
+- The DEM is the generator's own heightmap, read exactly, so the map is perfect,
+  and every number above is a best case on map quality. This is no longer only a
+  caveat: `dem_post_m`, `dem_noise_m` and `dem_shift_m` take it away, and what
+  they measure is not reassuring. The matcher reads SLOPE, so height error of
+  sigma correlated over length L arrives as slope error ~sigma/L - which means
+  0.05 m of DEM vertical error already hurts more than a 3 m registration offset,
+  and a real NAC-stereo DTM (2-5 m posts, 0.3-1 m vertical) would probably not
+  support this matcher on terrain as gentle as this site's 3 deg. Coarsening, by
+  contrast, is nearly free and a COARSER map is better at equal vertical error,
+  because it lengthens L. See PROGRESS.md, "How good does the map have to be?".
 - The replay above is a model of the EKF, not the EKF: it applies each accepted
   fix to a running correction, where the real filter weights it against its own
   covariance and keeps drifting between fixes. It is evidence that the fix
@@ -88,8 +93,80 @@ from regolith_costmap.costmap_node import load_heightmap
 from sensor_msgs.msg import Imu
 
 
-def terrain_gradients(manifest: dict) -> tuple:
-    """Return (gx, gy, world_size_m, resolution_m) for the a-priori DEM.
+def degrade_dem(dem, resolution_m, post_m=0.0, noise_m=0.0, shift_m=0.0, noise_seed=0,
+                prefilter_m=0.0):
+    """Return a deliberately worsened copy of the a-priori DEM. Identity when unset.
+
+    The shipped DEM is the terrain generator's own heightmap, read exactly - a
+    map no mission has. This is the knob that takes that idealisation away, and
+    it exists so the live stack can be run on a map with a mission's defects
+    rather than only reasoned about.
+
+    It is the SAME computation `scripts/terrain_relative_dem_quality.py` replays
+    offline, and deliberately shared with it rather than reimplemented: that
+    script's published table is the prediction this parameter lets us test live,
+    and two copies of a degradation model drift apart silently.
+
+    Three defects, applied in this order because that is the order a real
+    pipeline acquires them:
+
+      post_m   posts resampled coarser and back onto the same grid. Removes fine
+               relief - most of what the matcher reads. Information LOST.
+      noise_m  elevation error, spatially correlated at the post scale, RENORMALISED
+               to this rms after smoothing. The renormalisation is not a detail:
+               without it a smoothing kernel several cells wide cuts the drawn
+               sigma by more than an order of magnitude (0.15 m requested came
+               out as 0.008 m realised on a 0.39 m-post map), so the arm labelled
+               "0.1 m of elevation noise" was in truth testing coarsening plus a
+               trace - which is exactly why its replayed score was identical to
+               the coarsening-only arm. Correlated error is the right MODEL for a
+               DEM; its amplitude still has to be the amplitude claimed. The node
+               logs the realised rms either way, so the claim stays checkable.
+      shift_m  the map is internally correct but sits in the wrong place. A pure
+               BIAS, and the one the replay says is fatal: the matcher faithfully
+               reports where the rover is on a map that is itself displaced, at
+               full confidence, because nothing about the cost surface is wrong.
+
+    `prefilter_m` is NOT a defect. It is the mitigation the three above imply, and
+    it belongs to the rover rather than to the map: smooth the DEM you were given
+    before differentiating it. Since slope error goes as sigma/L, lengthening L
+    costs signal linearly and suppresses noise-induced slope error by the same
+    factor - and the degradation table already shows that trade is a good one,
+    because coarsening is the cheap defect and vertical error is the expensive
+    one. It is applied last, on the map as received, which is the only thing a
+    real rover could do.
+    """
+    import numpy as _np
+    from scipy import ndimage
+
+    dem = _np.asarray(dem, dtype=float)
+    if post_m and post_m > resolution_m:
+        factor = post_m / resolution_m
+        small = ndimage.zoom(dem, 1.0 / factor, order=1)
+        dem = ndimage.zoom(small, _np.array(dem.shape) / _np.array(small.shape), order=1)
+    realised_noise_m = 0.0
+    if noise_m:
+        rng = _np.random.default_rng(noise_seed)
+        field = ndimage.gaussian_filter(
+            rng.normal(0.0, noise_m, dem.shape),
+            sigma=max(post_m or resolution_m, resolution_m) / resolution_m,
+        )
+        spread = float(_np.std(field))
+        if spread > 0.0:
+            field *= noise_m / spread
+        realised_noise_m = float(_np.std(field))
+        dem = dem + field
+    if shift_m:
+        offset = shift_m / resolution_m
+        dem = ndimage.shift(dem, (offset, offset), order=1, mode="nearest")
+    if prefilter_m:
+        dem = ndimage.gaussian_filter(dem, sigma=prefilter_m / resolution_m)
+    return dem, realised_noise_m
+
+
+def terrain_gradients(manifest: dict, post_m=0.0, noise_m=0.0, shift_m=0.0,
+                      noise_seed=0, prefilter_m=0.0) -> tuple:
+    """Return (gx, gy, world_size_m, resolution_m, realised_noise_m) for the a-priori DEM.
 
     `load_heightmap` is reused rather than reimplemented on purpose: it carries
     two decodes that are easy to get wrong and were both live defects once - the
@@ -103,8 +180,12 @@ def terrain_gradients(manifest: dict) -> tuple:
     dem = load_heightmap(manifest)
     world_size_m = float(manifest["world_size_m"])
     resolution_m = world_size_m / (dem.shape[0] - 1)
+    dem, realised_noise_m = degrade_dem(
+        dem, resolution_m, post_m=post_m, noise_m=noise_m, shift_m=shift_m,
+        noise_seed=noise_seed, prefilter_m=prefilter_m,
+    )
     gy, gx = np.gradient(dem, resolution_m)
-    return gx, gy, world_size_m, resolution_m
+    return gx, gy, world_size_m, resolution_m, realised_noise_m
 
 
 def bilinear(field: np.ndarray, x, y, world_size_m: float, resolution_m: float):
@@ -370,6 +451,21 @@ class TerrainRelativeNode(Node):
         # the anchor firm while making any single fix unable to yank the
         # estimate, which is what went wrong live.
         self.declare_parameter("position_variance", 4.0)
+        # A-PRIORI MAP QUALITY. All zero ships a perfect map, which is the
+        # idealisation every terrain-relative number here carries. Non-zero
+        # hands the matcher a map with a real orbital DEM's defects; see
+        # `degrade_dem` for what each does and PROGRESS.md for the replayed
+        # prediction these exist to test live.
+        self.declare_parameter("dem_post_m", 0.0)
+        self.declare_parameter("dem_noise_m", 0.0)
+        self.declare_parameter("dem_shift_m", 0.0)
+        self.declare_parameter("dem_noise_seed", 0)
+        # NOT a defect - the mitigation the three above imply. Smoothing the map
+        # the rover was given, before differentiating it, trades signal for
+        # suppressed noise at the same 1/L rate. Default 0: on a good map it is a
+        # net loss (0.71 -> 1.66 m median in replay), and it only pays when the
+        # DEM's vertical accuracy is known to be poor - which a mission does know.
+        self.declare_parameter("dem_prefilter_m", 0.0)
 
         self._window_m = float(self.get_parameter("window_m").value)
         self._publish_hz = float(self.get_parameter("publish_hz").value)
@@ -383,11 +479,21 @@ class TerrainRelativeNode(Node):
         self._max_step_m = float(self.get_parameter("max_step_m").value)
         self._correction_interval_m = float(self.get_parameter("correction_interval_m").value)
         self._variance = float(self.get_parameter("position_variance").value)
+        dem_post_m = float(self.get_parameter("dem_post_m").value)
+        dem_noise_m = float(self.get_parameter("dem_noise_m").value)
+        dem_shift_m = float(self.get_parameter("dem_shift_m").value)
+        dem_noise_seed = int(self.get_parameter("dem_noise_seed").value)
+        dem_prefilter_m = float(self.get_parameter("dem_prefilter_m").value)
 
         manifest_path = Path(self.get_parameter("manifest_path").value)
         try:
             manifest = json.loads(manifest_path.read_text())
-            self._gx, self._gy, self._world_m, self._res_m = terrain_gradients(manifest)
+            (self._gx, self._gy, self._world_m, self._res_m,
+             realised_noise_m) = terrain_gradients(
+                manifest, post_m=dem_post_m, noise_m=dem_noise_m,
+                shift_m=dem_shift_m, noise_seed=dem_noise_seed,
+                prefilter_m=dem_prefilter_m,
+            )
         except (OSError, KeyError, ValueError) as error:
             self.get_logger().error(
                 f"Failed to load terrain manifest '{manifest_path}': {error!r}. Terrain-relative "
@@ -395,6 +501,29 @@ class TerrainRelativeNode(Node):
                 "regolith_terrain_gen."
             )
             raise SystemExit(1)
+
+        # Logged unconditionally, including the perfect-map case, so every run's
+        # console says what map it matched against. A degraded-map result that
+        # cannot be told apart from a perfect-map one after the fact is not a
+        # result. The realised noise rms is reported alongside the requested
+        # sigma because smoothing lowers it - see `degrade_dem`.
+        if dem_prefilter_m:
+            self.get_logger().info(
+                f"A-priori DEM PREFILTERED at {dem_prefilter_m:.2f} m before matching: "
+                "trades terrain detail for suppressed slope error. Only pays on a map "
+                "whose vertical accuracy is known to be poor."
+            )
+        if dem_post_m or dem_noise_m or dem_shift_m:
+            self.get_logger().warn(
+                f"A-PRIORI DEM DELIBERATELY DEGRADED: posts {dem_post_m:.2f} m "
+                f"(native {self._res_m:.2f} m), elevation noise {dem_noise_m:.2f} m sigma "
+                f"-> {realised_noise_m:.3f} m realised rms (seed {dem_noise_seed}), "
+                f"registration shift {dem_shift_m:.2f} m on both axes."
+            )
+        else:
+            self.get_logger().info(
+                f"A-priori DEM used as generated: perfect map, {self._res_m:.2f} m posts."
+            )
 
         # Ring of (x, y, yaw, roll, pitch, travelled_m) in the ESTIMATOR's frame,
         # one per `sample_stride_m` of travel. Distance-spaced rather than

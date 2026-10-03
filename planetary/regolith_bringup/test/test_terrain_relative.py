@@ -356,3 +356,125 @@ class TestNoBufferShift:
             "shift_samples is back - under dense publishing it pins the "
             "estimator's error in place instead of correcting it"
         )
+
+
+class TestDegradeDem:
+    """The a-priori-map-quality knob. Small tests, because it has one job each.
+
+    This function is shared with `scripts/terrain_relative_dem_quality.py`, whose
+    published table is the prediction the live degraded-map campaign tests. If it
+    changes behaviour, that table stops describing the code that produced it -
+    hence the identity test in particular.
+    """
+
+    @staticmethod
+    def _dem(n=64, seed=3):
+        rng = np.random.default_rng(seed)
+        y, x = np.mgrid[0:n, 0:n] / n
+        return 2.0 * np.sin(6.0 * x) * np.cos(5.0 * y) + 0.3 * rng.normal(size=(n, n))
+
+    def test_all_zero_is_the_identity(self):
+        """The default must not touch the map. Every perfect-map result depends on it."""
+        dem = self._dem()
+        out, realised = trn.degrade_dem(dem, 0.5)
+        assert np.array_equal(out, dem)
+        assert realised == 0.0
+
+    def test_coarsening_removes_fine_relief(self):
+        """Same grid, less detail: the high-frequency content is what is lost."""
+        dem = self._dem()
+        out, _ = trn.degrade_dem(dem, 0.5, post_m=4.0)
+        assert out.shape == dem.shape
+        assert np.std(out - dem) > 0.05
+        # A low-pass, not a scramble: the coarsened map still tracks the original.
+        assert np.corrcoef(out.ravel(), dem.ravel())[0, 1] > 0.5
+        assert np.std(np.diff(out, axis=1)) < np.std(np.diff(dem, axis=1))
+
+    def test_coarsening_below_native_resolution_is_a_no_op(self):
+        """Asking for finer posts than the map has cannot invent detail, so it does nothing."""
+        dem = self._dem()
+        out, _ = trn.degrade_dem(dem, 0.5, post_m=0.25)
+        assert np.array_equal(out, dem)
+
+    def test_noise_is_reproducible_and_seeded(self):
+        """A degraded map has to be re-runnable, or a campaign cell cannot be repeated."""
+        dem = self._dem()
+        a, ra = trn.degrade_dem(dem, 0.5, noise_m=0.2, noise_seed=7)
+        b, rb = trn.degrade_dem(dem, 0.5, noise_m=0.2, noise_seed=7)
+        c, _ = trn.degrade_dem(dem, 0.5, noise_m=0.2, noise_seed=8)
+        assert np.array_equal(a, b)
+        assert ra == rb
+        assert not np.array_equal(a, c)
+
+    def test_noise_realises_the_rms_it_was_asked_for(self):
+        """The amplitude has to be the amplitude claimed, at any smoothing scale.
+
+        Smoothing a drawn field cuts its rms by more than an order of magnitude at
+        realistic kernel widths, and an arm labelled "0.1 m of elevation noise"
+        that actually applies 0.005 m is not a test of anything. Pinned across two
+        very different post spacings because the shrinkage is what varies.
+        """
+        dem = self._dem()
+        for post_m in (0.0, 4.0):
+            _, realised = trn.degrade_dem(
+                dem, 0.5, noise_m=0.3, post_m=post_m, noise_seed=1)
+            assert realised == pytest.approx(0.3, rel=0.02), post_m
+
+    def test_noise_actually_perturbs_the_map_at_that_scale(self):
+        """And the renormalised field has to land on the DEM, not just be measured.
+
+        Compared against the COARSENED map rather than the original, because the
+        degradations compose in order and `out - dem` would also carry the relief
+        that coarsening removed.
+        """
+        dem = self._dem()
+        coarsened, _ = trn.degrade_dem(dem, 0.5, post_m=4.0)
+        out, _ = trn.degrade_dem(dem, 0.5, noise_m=0.3, post_m=4.0, noise_seed=1)
+        assert np.std(out - coarsened) == pytest.approx(0.3, rel=0.05)
+
+    def test_shift_displaces_the_map_without_changing_it(self):
+        """Registration error is a pure bias: the map is intact, just not where it says.
+
+        This is the defect the replay says is fatal, so the test pins that it is
+        genuinely a translation - the interior content is preserved, merely moved.
+        """
+        dem = self._dem()
+        res = 0.5
+        out, _ = trn.degrade_dem(dem, res, shift_m=2.0)  # 4 cells on both axes
+        assert np.allclose(out[4:, 4:], dem[:-4, :-4], atol=1e-9)
+
+    def test_shift_is_not_confused_with_information_loss(self):
+        """A shifted map keeps its relief; a coarsened one loses it. Different failures."""
+        dem = self._dem()
+        shifted, _ = trn.degrade_dem(dem, 0.5, shift_m=2.0)
+        coarsened, _ = trn.degrade_dem(dem, 0.5, post_m=4.0)
+        interior = (slice(8, -8), slice(8, -8))
+        assert np.std(shifted[interior]) == pytest.approx(np.std(dem[interior]), rel=0.1)
+        assert np.std(coarsened[interior]) < np.std(dem[interior])
+
+    def test_prefilter_smooths_and_is_not_a_degradation(self):
+        """The mitigation, not a defect: it lowers slope error on a map it is handed.
+
+        Pinned as a gradient property rather than a height one, because the whole
+        finding is that the matcher consumes slope: smoothing barely moves heights
+        and moves slopes a great deal, which is exactly why it is worth doing on a
+        noisy map and worth NOT doing on a clean one.
+        """
+        # A SMOOTH base, deliberately: `_dem` carries white noise of its own, and
+        # against that reference smoothing is indistinguishable from the defect it
+        # is meant to suppress. The claim is about real relief plus added error.
+        n, res = 96, 0.5
+        y, x = np.mgrid[0:n, 0:n] / n
+        dem = 2.0 * np.sin(6.0 * x) * np.cos(5.0 * y)
+        noisy, _ = trn.degrade_dem(dem, res, noise_m=0.3, noise_seed=1)
+        filtered, _ = trn.degrade_dem(dem, res, noise_m=0.3, noise_seed=1, prefilter_m=2.0)
+        clean_slope = np.hypot(*np.gradient(dem, res))
+        noisy_err = np.std(np.hypot(*np.gradient(noisy, res)) - clean_slope)
+        filtered_err = np.std(np.hypot(*np.gradient(filtered, res)) - clean_slope)
+        assert filtered_err < noisy_err
+
+    def test_prefilter_defaults_off(self):
+        """Because on a good map it costs accuracy - it is not a free improvement."""
+        dem = self._dem()
+        out, _ = trn.degrade_dem(dem, 0.5)
+        assert np.array_equal(out, dem)
