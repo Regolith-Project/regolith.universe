@@ -69,6 +69,7 @@ for "recovery worked".
 from collections import deque
 import math
 import subprocess
+from types import SimpleNamespace
 import time
 
 from geometry_msgs.msg import PointStamped
@@ -76,6 +77,7 @@ from geometry_msgs.msg import PoseStamped
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
 import rclpy
+from sensor_msgs.msg import Imu
 from rclpy.node import Node
 from std_msgs.msg import Bool
 
@@ -193,6 +195,17 @@ class FlipRecoveryNode(Node):
         # threshold cut it. Diagnostic only: nothing here feeds a decision.
         self.declare_parameter("stuck_debug", False)
 
+        # SIM-TO-REAL. Everything this node does to DECIDE something must be
+        # runnable on hardware; ground truth may inform the log, never the
+        # decision. With onboard_only:=true the detectors read the rover's own
+        # IMU attitude and its own EKF position instead of /ground_truth/pose,
+        # and the flip response stops teleporting (no real rover can). Ground
+        # truth is still subscribed and still printed beside every verdict, so
+        # the run can be SCORED against it - that is measurement, not control.
+        # Default false so the shipped behaviour and every banked number stay
+        # as they were until a paired campaign says what changes.
+        self.declare_parameter("onboard_only", False)
+
         # ~180 s of upright trail at check_period_s, so progressive backoff can
         # step back to a genuinely different location rather than the same lip.
         self._history = deque(maxlen=900)  # (t, x, y, z, yaw) upright poses
@@ -233,14 +246,20 @@ class FlipRecoveryNode(Node):
         self._rtf = 1.0
         self._rtf_sample = None  # (wall_t, sim_t) from the previous tick
         self._escape = None  # in-progress escape maneuver state - see _start_escape
-        self._trigger_counts = {"ground truth": 0, "wheel slip (onboard)": 0}
+        self._trigger_counts = {"ground truth": 0, "wheel slip (onboard)": 0,
+                                "onboard estimate": 0}
         self._trigger = None  # which detector fired the current recovery
         self._estimated_pose = (
             None  # /odometry/filtered, for marking hazards in the planner's frame
         )
         self._last_goal = None
 
+        self._imu_orientation = None  # onboard attitude, the real rover's source
+
+        # Ground truth is subscribed in both modes. In onboard_only it feeds the
+        # log and nothing else - see _detection_pose.
         self.create_subscription(PoseStamped, "/ground_truth/pose", self._on_pose, 10)
+        self.create_subscription(Imu, "/imu", self._on_imu, 10)
         self.create_subscription(Twist, "/cmd_vel", self._on_cmd, 10)
         self.create_subscription(Odometry, "/odometry/filtered", self._on_odometry, 10)
         self.create_subscription(PoseStamped, "/goal_pose", self._on_goal, 10)
@@ -264,16 +283,61 @@ class FlipRecoveryNode(Node):
         # 10 Hz control loop - see _escape_tick's docstring.
         nudge_rate_hz = self.get_parameter("stuck_nudge_rate_hz").value
         self.create_timer(1.0 / nudge_rate_hz, self._escape_tick)
-        self.get_logger().info(
-            "Flip/stuck recovery armed (simulated set_pose backstop for flips, "
-            "straight-line cmd_vel override for stuck-but-upright)"
-        )
+        if self._onboard_only():
+            self.get_logger().info(
+                "Flip/stuck recovery armed ONBOARD-ONLY: detection reads IMU attitude and "
+                "the EKF estimate, never /ground_truth/pose; a flip halts the mission "
+                "instead of teleporting. Ground truth is logged beside each verdict for "
+                "scoring only."
+            )
+        else:
+            self.get_logger().info(
+                "Flip/stuck recovery armed (simulated set_pose backstop for flips, "
+                "straight-line cmd_vel override for stuck-but-upright). Detection uses "
+                "GROUND TRUTH - a simulation oracle; see onboard_only for the "
+                "hardware-runnable path."
+            )
 
     def _now_s(self) -> float:
         return self.get_clock().now().nanoseconds / 1e9
 
+    def _onboard_only(self) -> bool:
+        return bool(self.get_parameter("onboard_only").value)
+
+    def _detection_pose(self):
+        """The pose the DETECTORS are allowed to use.
+
+        Ground truth in the default mode; in onboard_only, the rover's own IMU
+        attitude and its own EKF position, which is all a real rover has. The
+        difference is not cosmetic: when the wheels slip, the EKF believes the
+        rover is moving, so the "not translating" test that ground truth passes
+        instantly can miss entirely. That is the real detection problem, and it
+        is what the onboard wheel-slip trigger exists to cover.
+
+        Returns None when the chosen source has not produced a message yet.
+        """
+        if not self._onboard_only():
+            return self._pose
+        if self._imu_orientation is None or self._estimated_pose is None:
+            return None
+        return SimpleNamespace(
+            position=self._estimated_pose.position, orientation=self._imu_orientation
+        )
+
+    def _source_label(self) -> str:
+        return "onboard estimate" if self._onboard_only() else "ground truth"
+
+    def _gt_xy(self):
+        """Ground-truth (x, y) for SCORING ONLY - never for a decision."""
+        if self._pose is None:
+            return None
+        return (self._pose.position.x, self._pose.position.y)
+
     def _on_pose(self, msg: PoseStamped) -> None:
         self._pose = msg.pose
+
+    def _on_imu(self, msg: Imu) -> None:
+        self._imu_orientation = msg.orientation
 
     def _on_cmd(self, msg: Twist) -> None:
         self._last_cmd = msg
@@ -318,13 +382,14 @@ class FlipRecoveryNode(Node):
             # letting the flip/stuck detectors run concurrently with a
             # maneuver they didn't expect to overlap with.
             return
-        if self._pose is None:
+        pose = self._detection_pose()
+        if pose is None:
             return
-        roll, pitch, yaw = _roll_pitch_yaw(self._pose.orientation)
+        roll, pitch, yaw = _roll_pitch_yaw(pose.orientation)
         t = self._now_s()
         safe = math.radians(self.get_parameter("safe_threshold_deg").value)
         flip = math.radians(self.get_parameter("flip_threshold_deg").value)
-        p = self._pose.position
+        p = pose.position
 
         if abs(roll) < safe and abs(pitch) < safe:
             # Upright: record as a candidate recovery pose.
@@ -423,7 +488,8 @@ class FlipRecoveryNode(Node):
                 f"[stuck_debug] streak FIRED after {t - self._stuck_since:.2f}s (t={t:.2f})"
             )
 
-        self._fire_recovery(t, "ground truth")
+        # Same test either way; the label records which source it was allowed to read.
+        self._fire_recovery(t, self._source_label())
 
     def _track_shadow_streak(
         self,
@@ -600,7 +666,9 @@ class FlipRecoveryNode(Node):
         turn_rate = self.get_parameter("escape_turn_rate_rps").value
         turn_sign = 1.0 if level % 2 == 0 else -1.0
 
-        start_xy = (self._pose.position.x, self._pose.position.y) if self._pose else None
+        det = self._detection_pose()
+        start_xy = (det.position.x, det.position.y) if det else None
+        self._escape_start_gt = self._gt_xy()   # scoring only
         self._mark_hazard()
         self._set_recovery_active(True)
 
@@ -658,7 +726,8 @@ class FlipRecoveryNode(Node):
         self.get_logger().warn(
             f"STUCK RECOVERY #{self._stuck_resets} (escalation level {e['level']}, triggered by "
             f"{self._trigger}; {self._trigger_counts['ground truth']} ground-truth / "
-            f"{self._trigger_counts['wheel slip (onboard)']} onboard triggers so far). "
+            f"{self._trigger_counts['onboard estimate']} onboard-estimate / "
+            f"{self._trigger_counts['wheel slip (onboard)']} wheel-slip triggers so far). "
             f"Escape maneuver: reversed "
             f"{e['reverse_speed']:.2f} m/s for {e['reverse_s']:.1f}s, then turned "
             f"{'left' if e['turn_sign'] > 0 else 'right'} at {e['turn_rate']:.2f} rad/s for "
@@ -778,13 +847,45 @@ class FlipRecoveryNode(Node):
         freed = moved >= self.get_parameter("escape_freed_threshold_m").value
         if freed:
             self._escapes_freed += 1
+
+        # In onboard_only the verdict above is what the ROVER believes, from an
+        # EKF the slip it just escaped has been corrupting. Ground truth is
+        # printed beside it so the run can still be scored - and so a verdict
+        # that disagrees with reality is visible rather than silently banked.
+        truth = ""
+        gt_now, gt_then = self._gt_xy(), getattr(self, "_escape_start_gt", None)
+        if self._onboard_only() and gt_now and gt_then:
+            gt_moved = math.hypot(gt_now[0] - gt_then[0], gt_now[1] - gt_then[1])
+            agree = (gt_moved >= self.get_parameter("escape_freed_threshold_m").value) == freed
+            wrong = "" if agree else " - THE ROVER'S VERDICT IS WRONG"
+            truth = f" [scoring only: ground truth moved {gt_moved:.2f} m{wrong}]"
         self.get_logger().warn(
-            f"STUCK RECOVERY #{self._stuck_resets} result: ground truth moved {moved:.2f} m "
-            f"during the maneuver - {'FREED' if freed else 'STILL WEDGED'} "
+            f"STUCK RECOVERY #{self._stuck_resets} result: {self._source_label()} moved "
+            f"{moved:.2f} m during the maneuver - {'FREED' if freed else 'STILL WEDGED'} "
             f"({self._escapes_freed}/{self._stuck_resets} escapes have freed the rover so far)"
+            f"{truth}"
         )
 
     def _recover(self, roll: float, pitch: float) -> None:
+        if self._onboard_only():
+            # No teleport. A wheeled rover cannot self-right, so on hardware a
+            # flip ends the mission and waits for physical intervention. Saying
+            # so - and stopping - is the honest behaviour; set_pose here would
+            # be inventing a capability the vehicle does not have and would
+            # silently turn a mission-ending event into a pause in the log.
+            self._stop()
+            self._resets += 1
+            self.get_logger().error(
+                f"ROVER FLIPPED (roll {math.degrees(roll):.0f} deg, pitch "
+                f"{math.degrees(pitch):.0f} deg) and onboard_only is set, so there is no "
+                "recovery: a wheeled rover cannot self-right. On hardware this ends the "
+                "mission. Halting instead of teleporting - see flip_recovery_node.py."
+            )
+            # Long cooldown rather than a re-arm: nothing this node can do will
+            # change the situation, and re-detecting it every debounce would
+            # bury the log.
+            self._cooldown_until = self._now_s() + 1e9
+            return
         if not self._history:
             self.get_logger().warn(
                 "Rover flipped but no upright pose was ever recorded - cannot reset"
