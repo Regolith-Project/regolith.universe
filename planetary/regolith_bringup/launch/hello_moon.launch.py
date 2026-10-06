@@ -437,7 +437,10 @@ def _generate_and_launch(context, *args, **kwargs):
             # intrinsics, so /camera/camera_info describes both and pixel (u,v) is the
             # same ray in each - see regolith_rover.urdf.xacro.
             "/depth_camera@sensor_msgs/msg/Image@gz.msgs.Image",
-            "/imu@sensor_msgs/msg/Imu@gz.msgs.IMU",
+            # gz -> ROS only. It was bidirectional, which nothing needed, and with
+            # imu_error_model the bridge then also SUBSCRIBED to the remapped ideal
+            # IMU - flagged by the R5 ground-truth audit.
+            "/imu@sensor_msgs/msg/Imu[gz.msgs.IMU",
             f"/world/{WORLD_NAME}/model/{ROVER_NAME}/joint_state@sensor_msgs/msg/JointState@gz.msgs.Model",
             # Ground truth, comparison only - deliberately NOT fed into the EKF, and
             # NOT bridged to /tf (the EKF below is the sole publisher of odom -> base_link).
