@@ -268,7 +268,7 @@ def _generate_and_launch(context, *args, **kwargs):
 
     from regolith_terrain_gen.cli import default_output_dir
     from regolith_terrain_gen.config import TerrainConfig
-    from regolith_terrain_gen.generate import generate_world
+    from regolith_terrain_gen.generate import generate_world_shared
     import xacro
 
     # Claim a private ROS_DOMAIN_ID *first*, before any of the actions returned
@@ -344,7 +344,9 @@ def _generate_and_launch(context, *args, **kwargs):
     # overwrite each other's world files mid-load.
     world_dir = LaunchConfiguration("world_dir").perform(context).strip()
     output_dir = Path(world_dir).expanduser() if world_dir else default_output_dir(seed)
-    world_sdf_path = generate_world(cfg, output_dir, start_paused=False)
+    # Serialised machine-wide and skipped when output_dir already holds exactly
+    # this world (same config, same generator source) - see generate_world_shared.
+    world_sdf_path = generate_world_shared(cfg, output_dir, start_paused=False)
     manifest_path = output_dir / "manifest.json"
 
     # Spawn height must be above the ACTUAL local terrain elevation, not a fixed

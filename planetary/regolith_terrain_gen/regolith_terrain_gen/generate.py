@@ -175,3 +175,64 @@ def generate_world(cfg: TerrainConfig, output_dir: Path, start_paused: bool = Tr
     )
 
     return world_sdf_path
+
+
+def _generator_source_hash() -> str:
+    """Hash of this package's own source. Part of the generation stamp because
+    the stale-world incidents in PROGRESS.md were all generator CODE changes
+    under an unchanged seed, which a config-only stamp would not notice."""
+    import hashlib
+
+    digest = hashlib.sha256()
+    package_dir = Path(__file__).resolve().parent
+    for path in sorted(package_dir.rglob("*.py")):
+        digest.update(path.name.encode())
+        digest.update(path.read_bytes())
+    return digest.hexdigest()[:16]
+
+
+def generate_world_shared(cfg: TerrainConfig, output_dir: Path, start_paused: bool = False,
+                          lock_path: Path = None) -> Path:
+    """generate_world, serialised machine-wide and skipped when the directory
+    already holds exactly this world.
+
+    Two reasons, both measured while bringing up concurrent campaign cells:
+
+    * one generation peaks at ~4.5 GB resident, so a few cells generating at
+      once exhaust this 14 GB machine - under a lock only one peak exists at a
+      time;
+    * every cell generated its world twice, once in the acceptance harness (to
+      validate the goal) and again in the launch, each about a minute of CPU.
+
+    The skip is decided by a stamp written after a COMPLETE generation, holding
+    the full config, start_paused and a hash of the generator source. Anything
+    different regenerates, so this cannot serve a world the generator would not
+    produce today - the failure mode that made the harness "always regenerate".
+    """
+    import dataclasses
+    import fcntl
+    import json
+
+    output_dir = Path(output_dir)
+    lock_path = Path(lock_path) if lock_path else Path.home() / ".cache" / "regolith" / "worldgen.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    stamp_path = output_dir / "generation_stamp.json"
+    wanted = {
+        "config": json.loads(json.dumps(dataclasses.asdict(cfg))),
+        "start_paused": bool(start_paused),
+        "generator_source": _generator_source_hash(),
+    }
+    with open(lock_path, "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        world_sdf = output_dir / "world.sdf"
+        if stamp_path.exists() and world_sdf.exists():
+            try:
+                if json.loads(stamp_path.read_text()) == wanted:
+                    return world_sdf
+            except (OSError, ValueError):
+                pass
+        if stamp_path.exists():
+            stamp_path.unlink()
+        result = generate_world(cfg, output_dir, start_paused=start_paused)
+        stamp_path.write_text(json.dumps(wanted, indent=2))
+        return Path(result)
