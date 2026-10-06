@@ -116,6 +116,20 @@ class TerrainConfig:
     physics_max_step_size_s: float = 0.001
     # '' = gz-physics' default for DART. Otherwise one of fcl, bullet, ode, dart.
     physics_collision_detector: str = ""
+    # How the ground collides. "boxes" (the historical default): one tilted slab per
+    # collision_grid_resolution cell. At the current grid of 40 the slab seams leave
+    # vertical lips - 8% of seams on a measured seed exceed the 0.09 m wheel radius,
+    # up to 0.22 m - invisible walls on a 4.69 m grid that are in no map, no mesh
+    # the cameras see, and nothing the planner can avoid; a rover was measured pinned
+    # against an 11.4 cm one for 18 s while its wheels wrote a metre of phantom
+    # odometry (PROGRESS.md, "The invisible walls"). "mesh": the ground collides
+    # as a triangle mesh of the SAME surface heightmap.png encodes - the surface the
+    # costmap and the terrain matcher read as the a-priori map - so the physical
+    # ground and the "perfect map" are finally the same thing. Mesh collision does
+    # work in this install (the old note that it was unimplemented read a debug
+    # message from a code path gz-sim falls back from); verified by a box coming to
+    # rest at exactly terrain + half its size, at a real-time factor of 1.0.
+    terrain_collision: str = "boxes"
 
     sun_elevation_deg: float = 12.0
     sun_azimuth_deg: float = 235.0

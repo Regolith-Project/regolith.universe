@@ -434,6 +434,9 @@ def write_manifest(
         # ground is seated against. heightmap_png above is the same surface sampled at
         # every post, kept for the costmap; the mesh is what gz renders.
         "terrain_mesh_obj": str(terrain_mesh_obj),
+        # Which ground the physics used: "boxes" (tilted slabs) or "mesh" (the
+        # heightmap.png surface itself) - see config.terrain_collision.
+        "terrain_collision": cfg.terrain_collision,
         "terrain_mesh": terrain_mesh_stats,
         "world_sdf": str(world_sdf),
         "spawn_zone": {

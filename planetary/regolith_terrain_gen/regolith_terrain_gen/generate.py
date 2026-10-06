@@ -50,7 +50,22 @@ def generate_world(cfg: TerrainConfig, output_dir: Path, start_paused: bool = Tr
     # real-world (min, span) that full range maps to so worldgen can pin <pos>/<size> z
     # and the rendered ground lands exactly on the collision surface (see heightmap.py).
     heightmap_z_min, heightmap_z_span = save_heightmap_png(heightmap, heightmap_png)
-    terrain_collision_sdf = build_terrain_collision_boxes_sdf(raw_heightmap, cfg)
+    if cfg.terrain_collision == "mesh":
+        # From `heightmap` - the surface heightmap.png encodes and elevation_lookup
+        # samples - at full resolution, so the ground the rover physically drives on
+        # is exactly the one its a-priori map describes. See config.terrain_collision.
+        terrain_collision_obj = output_dir / "terrain_collision.obj"
+        save_terrain_mesh_obj(heightmap, cfg, terrain_collision_obj, stride=1)
+        terrain_collision_sdf = (
+            '<collision name="terrain_mesh_collision"><geometry><mesh>'
+            f"<uri>file://{terrain_collision_obj}</uri></mesh></geometry>"
+            "<surface><friction><ode><mu>1.2</mu><mu2>1.2</mu2></ode></friction></surface>"
+            "</collision>"
+        )
+    elif cfg.terrain_collision == "boxes":
+        terrain_collision_sdf = build_terrain_collision_boxes_sdf(raw_heightmap, cfg)
+    else:
+        raise ValueError(f"terrain_collision must be 'boxes' or 'mesh', got '{cfg.terrain_collision}'")
 
     # The DRAWN surface, refined from `heightmap` (== elevation_lookup's own surface)
     # within a hard, measured budget - see terrain_detail.py's module docstring. Runs on
