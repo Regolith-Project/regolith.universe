@@ -376,9 +376,16 @@ def _generate_and_launch(context, *args, **kwargs):
     # world_sdf_path as a string here, so rewriting the file now is safe - gz-sim
     # itself doesn't read it until the launch tree executes, after this function
     # returns.
+    #
+    # Into a COPY, world_launch.sdf, never world.sdf itself: generate_world_shared
+    # reuses world.sdf when it already holds exactly this world, so splicing the
+    # rover into it made the second launch of a seed load a world with two rovers
+    # ("model with name[rover] already exists") and die.
     rover_model_sdf = _bake_rover_model_sdf(rover_urdf_path, spawn_z)
+    generated_world_text = world_sdf_path.read_text()
+    world_sdf_path = output_dir / "world_launch.sdf"
     world_sdf_path.write_text(
-        world_sdf_path.read_text().replace("</world>", f"{rover_model_sdf}\n  </world>", 1)
+        generated_world_text.replace("</world>", f"{rover_model_sdf}\n  </world>", 1)
     )
 
     # Cinematic camera rig - opt-in, off ("none") by default, so a normal run is
