@@ -609,6 +609,8 @@ def _generate_and_launch(context, *args, **kwargs):
             "dem_noise_seed": dem_noise_seed,
             "dem_prefilter_m": dem_prefilter_m,
             "dem_shift_bearing_deg": dem_shift_bearing_deg,
+            "estimate_attitude_bias": LaunchConfiguration(
+                "terrain_relative_bias_estimation").perform(context).lower() == "true",
         }],
         condition=IfCondition(LaunchConfiguration("terrain_relative")),
     )
@@ -923,6 +925,14 @@ def generate_launch_description() -> LaunchDescription:
                 "(0 = +x, 90 = +y, counter-clockwise); dem_shift_m is then the "
                 "MAGNITUDE. Empty = unset = the legacy fixed diagonal (dem_shift_m on "
                 "both axes).",
+            ),
+            DeclareLaunchArgument(
+                "terrain_relative_bias_estimation",
+                default_value="false",
+                description="Estimate the IMU's constant tilt bias jointly with position before "
+                "matching absolutely (terrain_relative_node.match_offset_with_bias). Needed "
+                "with any realistic IMU: an uncorrected 0.8 deg tilt bias takes the matcher "
+                "from 0.38 m to 1.34 m median error in replay",
             ),
             DeclareLaunchArgument(
                 "imu_error_model",

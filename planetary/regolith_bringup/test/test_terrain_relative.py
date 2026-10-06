@@ -478,3 +478,49 @@ class TestDegradeDem:
         dem = self._dem()
         out, _ = trn.degrade_dem(dem, 0.5)
         assert np.array_equal(out, dem)
+
+
+class TestAttitudeBias:
+    """match_offset_with_bias: a constant body-frame tilt bias, as a real AHRS
+    carries, must not be read as a position offset (PROGRESS.md, "The terrain
+    matcher and a tilted IMU")."""
+
+    def _setup(self, scale=0.15, seed=21):
+        # Gentle terrain: scaled so slopes are a few degrees, like this site, where a
+        # sub-degree bias is a large fraction of the signal.
+        gx, gy = _bumpy_gradients(seed=seed)
+        gx, gy = gx * scale, gy * scale
+        xs, ys, yaws = TestMatchOffset()._trajectory(n=120)
+        true = (1.2, -0.8)
+        rolls, pitches = trn.predicted_attitude(gx, gy, WORLD_M, RES_M, xs + true[0], ys + true[1], yaws)
+        return gx, gy, xs, ys, yaws, rolls, pitches, true
+
+    def test_without_bias_the_interface_is_unchanged(self):
+        gx, gy, xs, ys, yaws, rolls, pitches, _ = self._setup()
+        a = trn.match_offset(gx, gy, WORLD_M, RES_M, xs, ys, yaws, rolls, pitches, 4.0, 0.25)
+        b = trn.match_offset_with_bias(gx, gy, WORLD_M, RES_M, xs, ys, yaws, rolls, pitches, 4.0, 0.25)
+        assert a == b[:3]
+
+    def test_fitting_the_bias_recovers_offset_and_bias(self):
+        gx, gy, xs, ys, yaws, rolls, pitches, true = self._setup()
+        rb, pb = math.radians(-0.4), math.radians(0.8)
+        dx, dy, margin, (eb_r, eb_p) = trn.match_offset_with_bias(
+            gx, gy, WORLD_M, RES_M, xs, ys, yaws, rolls + rb, pitches + pb, 4.0, 0.25, fit_bias=True)
+        assert math.hypot(dx - true[0], dy - true[1]) < 0.3
+        assert eb_r == pytest.approx(rb, abs=math.radians(0.1))
+        assert eb_p == pytest.approx(pb, abs=math.radians(0.1))
+
+    def test_fit_is_invariant_to_a_constant_bias(self):
+        gx, gy, xs, ys, yaws, rolls, pitches, _ = self._setup()
+        clean = trn.match_offset_with_bias(gx, gy, WORLD_M, RES_M, xs, ys, yaws, rolls, pitches,
+                                           4.0, 0.25, fit_bias=True)
+        biased = trn.match_offset_with_bias(gx, gy, WORLD_M, RES_M, xs, ys, yaws,
+                                            rolls + 0.01, pitches - 0.02, 4.0, 0.25, fit_bias=True)
+        assert clean[:3] == pytest.approx(biased[:3], abs=1e-9)
+
+    def test_a_known_bias_passed_in_restores_the_absolute_match(self):
+        gx, gy, xs, ys, yaws, rolls, pitches, true = self._setup()
+        pb = math.radians(0.8)
+        dx, dy, _, _ = trn.match_offset_with_bias(
+            gx, gy, WORLD_M, RES_M, xs, ys, yaws, rolls, pitches + pb, 4.0, 0.25, bias=(0.0, pb))
+        assert math.hypot(dx - true[0], dy - true[1]) < 0.3

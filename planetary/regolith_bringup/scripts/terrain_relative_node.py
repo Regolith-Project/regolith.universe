@@ -172,6 +172,27 @@ def match_offset(
     search_m: float = 6.0,
     step_m: float = 0.25,
 ):
+    """match_offset_with_bias with no attitude bias - see that function. Kept as
+    the original three-value interface; numerically identical to it."""
+    return match_offset_with_bias(gx, gy, world_size_m, resolution_m, xs, ys, yaws, rolls,
+                                  pitches, search_m, step_m)[:3]
+
+
+def match_offset_with_bias(
+    gx,
+    gy,
+    world_size_m,
+    resolution_m,
+    xs,
+    ys,
+    yaws,
+    rolls,
+    pitches,
+    search_m: float = 6.0,
+    step_m: float = 0.25,
+    bias=(0.0, 0.0),
+    fit_bias: bool = False,
+):
     """Find the (dx, dy) that best explains measured attitude along this trajectory.
 
     Returns (dx, dy, margin). `margin` is the median candidate cost divided by
@@ -185,6 +206,27 @@ def match_offset(
     worse (median 0.96/0.97 m against 0.82 m, and markedly worse on seed 123):
     the DC level of attitude is not a nuisance to be normalised away, it is an
     absolute measurement of the local slope and it carries real information.
+
+    THAT HOLDS ONLY FOR A PERFECT ATTITUDE. Every window above came from gz-sim's
+    exact IMU. A real AHRS levels against gravity through a biased accelerometer,
+    and on the Moon 1 mg of bias is about 0.35 deg of tilt - a constant error the
+    size of a third of this terrain's slope signal. Replayed over the same 25
+    runs, a 0.8 deg pitch bias takes this absolute cost from 0.38 m median (2
+    runs over 1.5 m) to 1.34 m (11 over), and in a live run the matcher pulled
+    the estimate 6 m off at its clamp rate with full confidence - a systematic
+    error, which the consistency gate cannot see (PROGRESS.md, "The terrain
+    matcher and a tilted IMU").
+
+    So the measured attitude is modelled as truth plus a constant body-frame
+    bias. `bias` is subtracted first. With `fit_bias`, the bias is also solved
+    jointly with the offset: the least-squares bias for each candidate is its
+    mean residual, so the cost becomes the residual variance and the result is
+    exactly invariant to a constant bias - at the price of the DC information
+    above. Returns (dx, dy, margin, (roll_bias, pitch_bias)): the bias estimate at
+    the winning candidate, including any `bias` passed in. The node uses fit_bias
+    only until it has estimated the bias, then matches absolutely with it removed
+    (estimate_attitude_bias), which replays at 0.41 m median, 2 over, under any
+    constant bias.
     """
     xs = np.asarray(xs, dtype=float)
     ys = np.asarray(ys, dtype=float)
@@ -211,7 +253,14 @@ def match_offset(
     pred_roll, pred_pitch = predicted_attitude(
         gx, gy, world_size_m, resolution_m, cand_x, cand_y, yaws[None, :]
     )
-    cost = np.mean((pred_roll - rolls[None, :]) ** 2 + (pred_pitch - pitches[None, :]) ** 2, axis=1)
+    res_roll = rolls[None, :] - bias[0] - pred_roll
+    res_pitch = pitches[None, :] - bias[1] - pred_pitch
+    mean_roll = res_roll.mean(axis=1, keepdims=True)
+    mean_pitch = res_pitch.mean(axis=1, keepdims=True)
+    if fit_bias:
+        cost = np.mean((res_roll - mean_roll) ** 2 + (res_pitch - mean_pitch) ** 2, axis=1)
+    else:
+        cost = np.mean(res_roll ** 2 + res_pitch ** 2, axis=1)
     best = int(np.argmin(cost))
     grid = cost.reshape(k, k)
     i, j = divmod(best, k)
@@ -233,7 +282,8 @@ def match_offset(
     dy = float(offsets[i]) + refine(i, True)
     dx = float(offsets[j]) + refine(j, False)
     margin = float(np.median(cost) / max(cost[best], 1e-12))
-    return dx, dy, margin
+    est_bias = (float(mean_roll[best, 0]) + bias[0], float(mean_pitch[best, 0]) + bias[1])
+    return dx, dy, margin, est_bias
 
 
 class Sample(NamedTuple):
@@ -361,6 +411,10 @@ class TerrainRelativeNode(Node):
         self.declare_parameter("min_samples", 30)
         self.declare_parameter("sample_stride_m", 0.2)
         self.declare_parameter("min_margin", 2.0)
+        # Attitude-bias estimation - see match_offset_with_bias. Off by default so
+        # every banked terrain-relative number keeps its meaning; on in RC-1.
+        self.declare_parameter("estimate_attitude_bias", False)
+        self.declare_parameter("bias_samples_needed", 5)
         self.declare_parameter("consistency_m", 1.5)
         # How far one publish may ask the filter to move. See clamp_correction.
         self.declare_parameter("max_step_m", 0.5)
@@ -410,6 +464,10 @@ class TerrainRelativeNode(Node):
         self._min_samples = int(self.get_parameter("min_samples").value)
         self._stride_m = float(self.get_parameter("sample_stride_m").value)
         self._min_margin = float(self.get_parameter("min_margin").value)
+        self._estimate_bias = bool(self.get_parameter("estimate_attitude_bias").value)
+        self._bias_needed = int(self.get_parameter("bias_samples_needed").value)
+        self._bias_samples = []  # per-window bias estimates while still fitting
+        self._attitude_bias = (0.0, 0.0) if not self._estimate_bias else None
         self._consistency_m = float(self.get_parameter("consistency_m").value)
         self._max_step_m = float(self.get_parameter("max_step_m").value)
         self._correction_interval_m = float(self.get_parameter("correction_interval_m").value)
@@ -662,7 +720,8 @@ class TerrainRelativeNode(Node):
         # so a correction the filter absorbs moves the window with it.
         xs, ys = reconstruct_window(arr[:, 0], arr[:, 1], self._track[0], self._track[1])
         yaws, rolls, pitches = arr[:, 2], arr[:, 3], arr[:, 4]
-        dx, dy, margin = match_offset(
+        fitting = self._attitude_bias is None
+        dx, dy, margin, window_bias = match_offset_with_bias(
             self._gx,
             self._gy,
             self._world_m,
@@ -674,7 +733,19 @@ class TerrainRelativeNode(Node):
             pitches,
             search_m=self._search_m,
             step_m=self._step_m,
+            bias=(0.0, 0.0) if fitting else self._attitude_bias,
+            fit_bias=fitting,
         )
+        if fitting and margin >= self._min_margin:
+            self._bias_samples.append(window_bias)
+            if len(self._bias_samples) >= self._bias_needed:
+                self._attitude_bias = tuple(float(v) for v in np.median(np.array(self._bias_samples), axis=0))
+                self.get_logger().warn(
+                    f"Attitude bias estimated from {len(self._bias_samples)} unambiguous windows: "
+                    f"roll {math.degrees(self._attitude_bias[0]):+.3f} deg, pitch "
+                    f"{math.degrees(self._attitude_bias[1]):+.3f} deg. Matching absolutely with "
+                    "it removed from here on."
+                )
 
         if margin < self._min_margin:
             self._fixes_rejected_margin += 1
