@@ -117,6 +117,7 @@ stated as a limit, not dressed up as validation.
 from collections import deque
 import math
 
+from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
 import rclpy
 from rclpy.node import Node
@@ -323,6 +324,18 @@ class WheelSlipNode(Node):
         # A/B LEVER ONLY - see the module docstring's "SIGNATURE 2, RETIRED" and
         # SlipDetector's own comment on this parameter.
         self.declare_parameter("legacy_rigid_body_signature", False)
+        # Pass wheel odometry through, unZUPTed, while flip_recovery_node is
+        # driving a commanded STRAIGHT REVERSE. The gate exists for wheels that
+        # spin against a wedge while being steered; a straight reverse carries
+        # no commanded rotation, so the rotation-disagreement signature has
+        # nothing to say about it, and holding the latch through it zeroed the
+        # one motion the rover most needed to observe - 14 of 23 freed escapes
+        # were judged STILL WEDGED from an EKF that never saw them move
+        # (PROGRESS.md, "The escape verdict, fixed"). Over 113 recorded escapes
+        # the raw odometry of the reverse matched ground truth closely. The
+        # cost, if the rover is in fact still pinned, is at most one reverse
+        # length of phantom distance.
+        self.declare_parameter("pass_commanded_reverse", True)
 
         self._detector = SlipDetector(
             window_s=self.get_parameter("window_s").value,
@@ -342,8 +355,13 @@ class WheelSlipNode(Node):
         self._zupt_messages = 0
         self._suppressed_m = 0.0  # phantom distance this node kept out of the EKF
         self._last_stamp = None
+        self._recovery_active = False
+        self._last_cmd = (0.0, 0.0)
+        self._passed_through = 0  # odometry messages let through during escape reverses
 
         self.create_subscription(Imu, "/imu", self._on_imu, 20)
+        self.create_subscription(Bool, "/recovery_active", self._on_recovery_active, 10)
+        self.create_subscription(Twist, "/cmd_vel", self._on_cmd, 20)
         self.create_subscription(
             Odometry, self.get_parameter("odom_topic").value, self._on_odom, 20
         )
@@ -358,6 +376,17 @@ class WheelSlipNode(Node):
             + (" [A/B LEVER: retired signature 2 re-enabled]" if legacy else "")
         )
 
+    def _on_recovery_active(self, msg: Bool) -> None:
+        self._recovery_active = msg.data
+
+    def _on_cmd(self, msg: Twist) -> None:
+        self._last_cmd = (msg.linear.x, msg.angular.z)
+
+    def _commanded_escape_reverse(self) -> bool:
+        vx, wz = self._last_cmd
+        return (self.get_parameter("pass_commanded_reverse").value and self._recovery_active
+                and vx < -0.05 and abs(wz) < 0.05)
+
     def _on_imu(self, msg: Imu) -> None:
         self._imu = (msg.angular_velocity.z, _roll_pitch_yaw(msg.orientation))
 
@@ -371,7 +400,9 @@ class WheelSlipNode(Node):
             self._update_state(vx, stamp)
 
         out = msg
-        if self._slipping:
+        if self._slipping and self._commanded_escape_reverse():
+            self._passed_through += 1
+        elif self._slipping:
             out.twist.twist.linear.x = 0.0
             out.twist.twist.linear.y = 0.0
             out.twist.twist.angular.z = 0.0
@@ -439,7 +470,9 @@ def main() -> None:
     except KeyboardInterrupt:
         pass
     node.get_logger().info(
-        f"Wheel-slip summary: {node._slip_events} slip episodes, {node._zupt_messages} "
+        f"Wheel-slip summary: {node._slip_events} slip episodes, "
+        f"{node._passed_through} odometry messages passed through during escape reverses, "
+        f"{node._zupt_messages} "
         f"zero-velocity updates, {node._suppressed_m:.2f} m of phantom wheel distance "
         "kept out of the EKF"
     )

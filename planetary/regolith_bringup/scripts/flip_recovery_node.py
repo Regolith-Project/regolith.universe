@@ -67,6 +67,7 @@ for "recovery worked".
 """
 
 from collections import deque
+import json
 import math
 import subprocess
 from types import SimpleNamespace
@@ -80,6 +81,7 @@ import rclpy
 from sensor_msgs.msg import Imu
 from rclpy.node import Node
 from std_msgs.msg import Bool
+from std_msgs.msg import String
 
 
 def _roll_pitch_yaw(q) -> tuple:
@@ -97,6 +99,43 @@ def hazard_point_xy(estimated_xy: tuple, yaw: float, lead_m: float) -> tuple:
     """
     x, y = estimated_xy
     return (x + lead_m * math.cos(yaw), y + lead_m * math.sin(yaw))
+
+
+def escape_verdict(odom_reverse_m: float, gyro_turn_rad: float, commanded_turn_rad: float,
+                   freed_threshold_m: float, min_turn_ratio: float,
+                   min_commanded_turn_rad: float) -> tuple:
+    """Did an escape maneuver free the rover, judged from onboard evidence only?
+
+    Returns (freed, reason). Two pieces of evidence, both measured DURING the
+    maneuver and neither of them the EKF:
+
+    1. Raw wheel odometry over the straight reverse. A freed rover backs out
+       along the clear path it drove in on, where the wheels do not slip; over
+       113 recorded escapes raw odometry matched ground-truth displacement
+       closely (0.56 vs 0.54 m, 1.84 vs 1.97 m - PROGRESS.md, "The escape
+       verdict, fixed"). The EKF cannot be used: wheel_slip_node's ZUPT was
+       latched through the maneuver and zeroed the very motion being judged,
+       which is why 14 of 23 freed escapes were reported STILL WEDGED.
+    2. The gyro over the in-place turn. Wheels spinning against a wedge also
+       produce odometry, so (1) alone cannot tell a reverse that happened from
+       one that was claimed. A pinned chassis cannot rotate: the gyro must see at
+       least min_turn_ratio of the commanded rotation, in the commanded
+       direction. Same threshold as wheel_slip_node's rotation-disagreement
+       signature (0.145), whose honest-driving floor is 0.17; free in-place turns
+       recorded at 0.34-0.5.
+
+    When the commanded turn is too small to judge, (2) is not applied.
+    """
+    if odom_reverse_m < freed_threshold_m:
+        return False, f"wheels reversed only {odom_reverse_m:.2f} m"
+    if abs(commanded_turn_rad) >= min_commanded_turn_rad:
+        ratio = gyro_turn_rad / commanded_turn_rad  # signed: a turn the wrong way is not a turn
+        if ratio < min_turn_ratio:
+            return False, (f"wheels reversed {odom_reverse_m:.2f} m but the gyro saw only "
+                           f"{ratio:.0%} of the commanded turn - pinned")
+        return True, (f"wheels reversed {odom_reverse_m:.2f} m and the gyro saw {ratio:.0%} "
+                      "of the commanded turn")
+    return True, f"wheels reversed {odom_reverse_m:.2f} m (turn too small to judge)"
 
 
 def hazard_too_close_to_goal(hazard_xy: tuple, goal_xy: tuple, clearance_m: float) -> bool:
@@ -147,7 +186,10 @@ class FlipRecoveryNode(Node):
         self.declare_parameter("escape_turn_s", 2.0)  # base; +1.5 s per consecutive event
         self.declare_parameter("escape_max_reverse_s", 10.0)
         self.declare_parameter("escape_max_turn_s", 8.0)
-        self.declare_parameter("escape_freed_threshold_m", 0.3)  # GT motion that counts as "freed"
+        self.declare_parameter("escape_freed_threshold_m", 0.3)  # motion that counts as "freed"
+        # Onboard escape verdict - see escape_verdict().
+        self.declare_parameter("escape_min_turn_ratio", 0.145)
+        self.declare_parameter("escape_min_commanded_turn_rad", 0.3)
         self.declare_parameter(
             "escape_check_delay_s", 1.0
         )  # sim time to wait before judging the result
@@ -256,9 +298,15 @@ class FlipRecoveryNode(Node):
 
         self._imu_orientation = None  # onboard attitude, the real rover's source
 
-        # Ground truth is subscribed in both modes. In onboard_only it feeds the
-        # log and nothing else - see _detection_pose.
-        self.create_subscription(PoseStamped, "/ground_truth/pose", self._on_pose, 10)
+        # Ground truth only in the oracle mode. In onboard_only it used to be
+        # subscribed anyway "for scoring", but information inside a rover process
+        # can reach a decision, and docs/TRL4_BASELINE.md R5 forbids any autonomy
+        # node from subscribing to /ground_truth/*. Escapes are now scored by the
+        # acceptance harness from its own ground-truth trace, against the report
+        # this node publishes on /recovery/escape_report.
+        if not self._onboard_only():
+            self.create_subscription(PoseStamped, "/ground_truth/pose", self._on_pose, 10)
+        self.create_subscription(Odometry, "/odom", self._on_raw_odom, 20)
         self.create_subscription(Imu, "/imu", self._on_imu, 10)
         self.create_subscription(Twist, "/cmd_vel", self._on_cmd, 10)
         self.create_subscription(Odometry, "/odometry/filtered", self._on_odometry, 10)
@@ -273,6 +321,7 @@ class FlipRecoveryNode(Node):
         # commands, which is precisely what the maneuver is trying to undo. So
         # the follower is muted outright for the duration - see pure_pursuit_node.
         self._recovery_pub = self.create_publisher(Bool, "/recovery_active", 10)
+        self._escape_report_pub = self.create_publisher(String, "/recovery/escape_report", 10)
         period = self.get_parameter("check_period_s").value
         self.create_timer(period, self._tick)
         # Drives the in-progress escape maneuver, when there is one - see
@@ -338,6 +387,23 @@ class FlipRecoveryNode(Node):
 
     def _on_imu(self, msg: Imu) -> None:
         self._imu_orientation = msg.orientation
+        e = self._escape
+        if e is not None and e["state"] == "turn":
+            stamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+            if e.get("imu_stamp") is not None and 0.0 < stamp - e["imu_stamp"] < 0.5:
+                e["gyro_turn_rad"] += msg.angular_velocity.z * (stamp - e["imu_stamp"])
+            e["imu_stamp"] = stamp
+
+    def _on_raw_odom(self, msg: Odometry) -> None:
+        """Integrates the wheels' own distance claim over the reverse phase -
+        evidence for escape_verdict(), read before any ZUPT gating."""
+        e = self._escape
+        if e is None or e["state"] != "reverse":
+            return
+        stamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+        if e.get("odom_stamp") is not None and 0.0 < stamp - e["odom_stamp"] < 0.5:
+            e["odom_reverse_m"] += abs(msg.twist.twist.linear.x) * (stamp - e["odom_stamp"])
+        e["odom_stamp"] = stamp
 
     def _on_cmd(self, msg: Twist) -> None:
         self._last_cmd = msg
@@ -683,6 +749,12 @@ class FlipRecoveryNode(Node):
             "turn_rate": turn_rate,
             "turn_s": turn_s,
             "turn_sign": turn_sign,
+            "t_start": t0,
+            "t_turn": None,
+            "odom_reverse_m": 0.0,
+            "odom_stamp": None,
+            "gyro_turn_rad": 0.0,
+            "imu_stamp": None,
         }
 
     def _escape_tick(self) -> None:
@@ -710,6 +782,7 @@ class FlipRecoveryNode(Node):
             if t >= e["deadline"]:
                 e["state"] = "turn"
                 e["deadline"] = t + e["turn_s"]
+                e["t_turn"] = t
             return
         if e["state"] == "turn":
             cmd.angular.z = e["turn_sign"] * e["turn_rate"]
@@ -747,6 +820,10 @@ class FlipRecoveryNode(Node):
         self._stuck_since = None
         self._prev_tick_pose = None  # the maneuver moved the rover; don't measure speed across it
         self._stuck_cooldown_until = t_now + self.get_parameter("stuck_cooldown_s").value
+        if self._onboard_only():
+            self._report_onboard_verdict(e, t_now)
+            self._escape = None
+            return
         start_xy = e["start_xy"]
         if start_xy is not None:
             # Did the maneuver actually move the rover? This is the number the
@@ -765,6 +842,36 @@ class FlipRecoveryNode(Node):
             # the kind of number this project must not get wrong either way.
             self._pending_escape_check = (start_xy[0], start_xy[1], e["level"], None)
         self._escape = None
+
+    def _report_onboard_verdict(self, e: dict, t_end: float) -> None:
+        """Judge the escape from onboard evidence (escape_verdict), log it, and
+        publish it so the acceptance harness can score it against ground truth."""
+        commanded_turn = e["turn_sign"] * e["turn_rate"] * e["turn_s"]
+        freed, reason = escape_verdict(
+            e["odom_reverse_m"], e["gyro_turn_rad"], commanded_turn,
+            self.get_parameter("escape_freed_threshold_m").value,
+            self.get_parameter("escape_min_turn_ratio").value,
+            self.get_parameter("escape_min_commanded_turn_rad").value,
+        )
+        if freed:
+            self._escapes_freed += 1
+        report = {
+            "n": self._stuck_resets,
+            "level": e["level"],
+            "t_start": e["t_start"],
+            "t_turn": e["t_turn"],
+            "t_end": t_end,
+            "freed": freed,
+            "odom_reverse_m": round(e["odom_reverse_m"], 4),
+            "gyro_turn_rad": round(e["gyro_turn_rad"], 4),
+            "commanded_turn_rad": round(commanded_turn, 4),
+        }
+        self._escape_report_pub.publish(String(data=json.dumps(report)))
+        self.get_logger().warn(
+            f"STUCK RECOVERY #{self._stuck_resets} result: onboard evidence - "
+            f"{'FREED' if freed else 'STILL WEDGED'} ({reason}; "
+            f"{self._escapes_freed}/{self._stuck_resets} escapes judged freed so far)"
+        )
 
     def _mark_hazard(self) -> None:
         """Publish the wedge point so the costmap can make it a keep-out zone.

@@ -90,82 +90,13 @@ import numpy as np
 import rclpy
 from rclpy.node import Node
 from regolith_costmap.costmap_node import load_heightmap
+from regolith_costmap.dem_degradation import bearing_from_param
+from regolith_costmap.dem_degradation import degrade_dem
 from sensor_msgs.msg import Imu
 
 
-def degrade_dem(dem, resolution_m, post_m=0.0, noise_m=0.0, shift_m=0.0, noise_seed=0,
-                prefilter_m=0.0):
-    """Return a deliberately worsened copy of the a-priori DEM. Identity when unset.
-
-    The shipped DEM is the terrain generator's own heightmap, read exactly - a
-    map no mission has. This is the knob that takes that idealisation away, and
-    it exists so the live stack can be run on a map with a mission's defects
-    rather than only reasoned about.
-
-    It is the SAME computation `scripts/terrain_relative_dem_quality.py` replays
-    offline, and deliberately shared with it rather than reimplemented: that
-    script's published table is the prediction this parameter lets us test live,
-    and two copies of a degradation model drift apart silently.
-
-    Three defects, applied in this order because that is the order a real
-    pipeline acquires them:
-
-      post_m   posts resampled coarser and back onto the same grid. Removes fine
-               relief - most of what the matcher reads. Information LOST.
-      noise_m  elevation error, spatially correlated at the post scale, RENORMALISED
-               to this rms after smoothing. The renormalisation is not a detail:
-               without it a smoothing kernel several cells wide cuts the drawn
-               sigma by more than an order of magnitude (0.15 m requested came
-               out as 0.008 m realised on a 0.39 m-post map), so the arm labelled
-               "0.1 m of elevation noise" was in truth testing coarsening plus a
-               trace - which is exactly why its replayed score was identical to
-               the coarsening-only arm. Correlated error is the right MODEL for a
-               DEM; its amplitude still has to be the amplitude claimed. The node
-               logs the realised rms either way, so the claim stays checkable.
-      shift_m  the map is internally correct but sits in the wrong place. A pure
-               BIAS, and the one the replay says is fatal: the matcher faithfully
-               reports where the rover is on a map that is itself displaced, at
-               full confidence, because nothing about the cost surface is wrong.
-
-    `prefilter_m` is NOT a defect. It is the mitigation the three above imply, and
-    it belongs to the rover rather than to the map: smooth the DEM you were given
-    before differentiating it. Since slope error goes as sigma/L, lengthening L
-    costs signal linearly and suppresses noise-induced slope error by the same
-    factor - and the degradation table already shows that trade is a good one,
-    because coarsening is the cheap defect and vertical error is the expensive
-    one. It is applied last, on the map as received, which is the only thing a
-    real rover could do.
-    """
-    import numpy as _np
-    from scipy import ndimage
-
-    dem = _np.asarray(dem, dtype=float)
-    if post_m and post_m > resolution_m:
-        factor = post_m / resolution_m
-        small = ndimage.zoom(dem, 1.0 / factor, order=1)
-        dem = ndimage.zoom(small, _np.array(dem.shape) / _np.array(small.shape), order=1)
-    realised_noise_m = 0.0
-    if noise_m:
-        rng = _np.random.default_rng(noise_seed)
-        field = ndimage.gaussian_filter(
-            rng.normal(0.0, noise_m, dem.shape),
-            sigma=max(post_m or resolution_m, resolution_m) / resolution_m,
-        )
-        spread = float(_np.std(field))
-        if spread > 0.0:
-            field *= noise_m / spread
-        realised_noise_m = float(_np.std(field))
-        dem = dem + field
-    if shift_m:
-        offset = shift_m / resolution_m
-        dem = ndimage.shift(dem, (offset, offset), order=1, mode="nearest")
-    if prefilter_m:
-        dem = ndimage.gaussian_filter(dem, sigma=prefilter_m / resolution_m)
-    return dem, realised_noise_m
-
-
 def terrain_gradients(manifest: dict, post_m=0.0, noise_m=0.0, shift_m=0.0,
-                      noise_seed=0, prefilter_m=0.0) -> tuple:
+                      noise_seed=0, prefilter_m=0.0, shift_bearing_deg=None) -> tuple:
     """Return (gx, gy, world_size_m, resolution_m, realised_noise_m) for the a-priori DEM.
 
     `load_heightmap` is reused rather than reimplemented on purpose: it carries
@@ -182,7 +113,7 @@ def terrain_gradients(manifest: dict, post_m=0.0, noise_m=0.0, shift_m=0.0,
     resolution_m = world_size_m / (dem.shape[0] - 1)
     dem, realised_noise_m = degrade_dem(
         dem, resolution_m, post_m=post_m, noise_m=noise_m, shift_m=shift_m,
-        noise_seed=noise_seed, prefilter_m=prefilter_m,
+        noise_seed=noise_seed, prefilter_m=prefilter_m, shift_bearing_deg=shift_bearing_deg,
     )
     gy, gx = np.gradient(dem, resolution_m)
     return gx, gy, world_size_m, resolution_m, realised_noise_m
@@ -460,6 +391,10 @@ class TerrainRelativeNode(Node):
         self.declare_parameter("dem_noise_m", 0.0)
         self.declare_parameter("dem_shift_m", 0.0)
         self.declare_parameter("dem_noise_seed", 0)
+        # Direction of the registration offset. NaN = not set = the legacy fixed
+        # diagonal (ROS parameters cannot be None); a bearing makes dem_shift_m the
+        # offset's MAGNITUDE along that bearing (0 deg = +x, 90 deg = +y).
+        self.declare_parameter("dem_shift_bearing_deg", float("nan"))
         # NOT a defect - the mitigation the three above imply. Smoothing the map
         # the rover was given, before differentiating it, trades signal for
         # suppressed noise at the same 1/L rate. Default 0: on a good map it is a
@@ -484,6 +419,8 @@ class TerrainRelativeNode(Node):
         dem_shift_m = float(self.get_parameter("dem_shift_m").value)
         dem_noise_seed = int(self.get_parameter("dem_noise_seed").value)
         dem_prefilter_m = float(self.get_parameter("dem_prefilter_m").value)
+        dem_shift_bearing_deg = bearing_from_param(
+            self.get_parameter("dem_shift_bearing_deg").value)
 
         manifest_path = Path(self.get_parameter("manifest_path").value)
         try:
@@ -492,7 +429,7 @@ class TerrainRelativeNode(Node):
              realised_noise_m) = terrain_gradients(
                 manifest, post_m=dem_post_m, noise_m=dem_noise_m,
                 shift_m=dem_shift_m, noise_seed=dem_noise_seed,
-                prefilter_m=dem_prefilter_m,
+                prefilter_m=dem_prefilter_m, shift_bearing_deg=dem_shift_bearing_deg,
             )
         except (OSError, KeyError, ValueError) as error:
             self.get_logger().error(
@@ -518,7 +455,9 @@ class TerrainRelativeNode(Node):
                 f"A-PRIORI DEM DELIBERATELY DEGRADED: posts {dem_post_m:.2f} m "
                 f"(native {self._res_m:.2f} m), elevation noise {dem_noise_m:.2f} m sigma "
                 f"-> {realised_noise_m:.3f} m realised rms (seed {dem_noise_seed}), "
-                f"registration shift {dem_shift_m:.2f} m on both axes."
+                f"registration shift {dem_shift_m:.2f} m "
+                + ("on both axes." if dem_shift_bearing_deg is None
+                   else f"along bearing {dem_shift_bearing_deg:.1f} deg.")
             )
         else:
             self.get_logger().info(

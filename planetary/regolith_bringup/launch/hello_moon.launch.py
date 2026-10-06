@@ -561,6 +561,9 @@ def _generate_and_launch(context, *args, **kwargs):
     dem_shift_m = float(LaunchConfiguration("dem_shift_m").perform(context))
     dem_noise_seed = int(LaunchConfiguration("dem_noise_seed").perform(context))
     dem_prefilter_m = float(LaunchConfiguration("dem_prefilter_m").perform(context))
+    # Empty = not set = the legacy diagonal; NaN carries "unset" through a ROS parameter.
+    bearing_text = LaunchConfiguration("dem_shift_bearing_deg").perform(context).strip()
+    dem_shift_bearing_deg = float(bearing_text) if bearing_text else float("nan")
     if terrain_relative and (dem_post_m or dem_noise_m or dem_shift_m):
         print(
             f"[hello_moon.launch] A-PRIORI DEM DEGRADED: posts {dem_post_m} m, noise "
@@ -580,23 +583,56 @@ def _generate_and_launch(context, *args, **kwargs):
             "dem_shift_m": dem_shift_m,
             "dem_noise_seed": dem_noise_seed,
             "dem_prefilter_m": dem_prefilter_m,
+            "dem_shift_bearing_deg": dem_shift_bearing_deg,
         }],
         condition=IfCondition(LaunchConfiguration("terrain_relative")),
     )
 
+    # costmap_prior=perfect (default): the generator's heightmap and every rock at its
+    # exact position, as always. =apriori: the planner gets the SAME degraded map the
+    # terrain matcher gets (the dem_* arguments above), with its rocks displaced by the
+    # same registration shift, and only rocks of at least rock_min_detect_diameter_m.
+    # See docs/TRL4_BASELINE.md, gap G9.
+    costmap_prior = LaunchConfiguration("costmap_prior").perform(context)
+    if costmap_prior not in ("perfect", "apriori"):
+        raise RuntimeError(
+            f"costmap_prior must be 'perfect' or 'apriori', got '{costmap_prior}'"
+        )
+    costmap_params = {
+        "manifest_path": str(manifest_path),
+        "resolution_m": 1.0,
+        "rover_radius_m": 0.3,
+        "slope_lethal_deg": 20.0,
+        "use_sim_time": True,
+    }
+    rock_min_detect_diameter_m = float(
+        LaunchConfiguration("rock_min_detect_diameter_m").perform(context))
+    if costmap_prior == "apriori":
+        costmap_params.update({
+            "dem_post_m": dem_post_m,
+            "dem_noise_m": dem_noise_m,
+            "dem_shift_m": dem_shift_m,
+            "dem_shift_bearing_deg": dem_shift_bearing_deg,
+            "dem_noise_seed": dem_noise_seed,
+            "rock_min_detect_diameter_m": rock_min_detect_diameter_m,
+        })
+        print(
+            "[hello_moon.launch] COSTMAP FROM THE A-PRIORI MAP: the planner sees the "
+            "degraded DEM and only rocks of diameter >= "
+            f"{rock_min_detect_diameter_m} m. Not a perfect-oracle costmap.",
+            flush=True,
+        )
+    elif rock_min_detect_diameter_m:
+        print(
+            "[hello_moon.launch] rock_min_detect_diameter_m is ignored with "
+            "costmap_prior:=perfect.",
+            flush=True,
+        )
     costmap_node = Node(
         package="regolith_costmap",
         executable="costmap_node",
         output="screen",
-        parameters=[
-            {
-                "manifest_path": str(manifest_path),
-                "resolution_m": 1.0,
-                "rover_radius_m": 0.3,
-                "slope_lethal_deg": 20.0,
-                "use_sim_time": True,
-            }
-        ],
+        parameters=[costmap_params],
     )
 
     planner_node = Node(
@@ -851,6 +887,30 @@ def generate_launch_description() -> LaunchDescription:
                 "fixes at full confidence, because nothing about the cost surface is "
                 "wrong - the map is simply not where it says it is. Only affects "
                 "terrain_relative.",
+            ),
+            DeclareLaunchArgument(
+                "dem_shift_bearing_deg",
+                default_value="",
+                description="Direction of the dem_shift_m registration offset, degrees "
+                "(0 = +x, 90 = +y, counter-clockwise); dem_shift_m is then the "
+                "MAGNITUDE. Empty = unset = the legacy fixed diagonal (dem_shift_m on "
+                "both axes).",
+            ),
+            DeclareLaunchArgument(
+                "costmap_prior",
+                default_value="perfect",
+                description="'perfect': the planner's costmap is built from the generator's "
+                "heightmap and every rock at its exact position (a hazard oracle). "
+                "'apriori': it is built from the same degraded DEM terrain_relative "
+                "uses (dem_* arguments) with rocks shifted identically and filtered by "
+                "rock_min_detect_diameter_m. docs/TRL4_BASELINE.md, gap G9.",
+            ),
+            DeclareLaunchArgument(
+                "rock_min_detect_diameter_m",
+                default_value="0.0",
+                description="With costmap_prior:=apriori, rocks whose horizontal footprint "
+                "diameter is below this are absent from the planner's map (not "
+                "detectable from orbit). 0 = every rock.",
             ),
             DeclareLaunchArgument(
                 "dem_noise_seed",

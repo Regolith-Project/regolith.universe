@@ -21,6 +21,10 @@ from rclpy.qos import QoSDurabilityPolicy
 from rclpy.qos import QoSProfile
 from scipy import ndimage
 
+from regolith_costmap.dem_degradation import bearing_from_param
+from regolith_costmap.dem_degradation import degrade_dem
+from regolith_costmap.dem_degradation import shift_vector_m
+
 
 def load_heightmap(manifest: dict) -> np.ndarray:
     """Decode the terrain heightmap PNG into this module's [row = y, col = x] array, in absolute metres.
@@ -73,8 +77,18 @@ def build_costmap(
     resolution_m: float,
     rover_radius_m: float,
     slope_lethal_deg: float,
+    rock_shift_xy_m: tuple = (0.0, 0.0),
+    rock_min_detect_diameter_m: float = 0.0,
 ) -> tuple:
-    """Return (cost_grid uint8 [0-100], resolution_m, origin_x_m, origin_y_m)."""
+    """Return (cost_grid uint8 [0-100], resolution_m, origin_x_m, origin_y_m).
+
+    The last two arguments model a rock layer taken from orbit rather than read
+    from the world manifest (docs/TRL4_BASELINE.md, gap G9). Rocks whose footprint
+    diameter is below `rock_min_detect_diameter_m` are not in the map at all, and
+    the rest sit at their true position displaced by `rock_shift_xy_m` - the same
+    registration offset the DEM carries, because a mis-registered map is
+    mis-registered everywhere on it. Defaults reproduce the perfect-oracle costmap.
+    """
     world_size_m = manifest["world_size_m"]
     grid_size = int(round(world_size_m / resolution_m))
 
@@ -100,13 +114,15 @@ def build_costmap(
     half_world = world_size_m / 2.0
     rows, cols = elevation.shape
     for rock in manifest["rocks"]:
-        row = int((rock["y_m"] + half_world) / actual_resolution_m)
-        col = int((rock["x_m"] + half_world) / actual_resolution_m)
         # Prefer the rock's real horizontal collision footprint over scale_m, which is
         # the mesh BOUNDING radius and overstates these anisotropic boulders' thin axes.
         # Older manifests (pre-ellipsoid-collision) have no radii, so fall back.
         radii = rock.get("collision_radii_m")
         footprint_m = max(radii[0], radii[1]) if radii else rock["scale_m"]
+        if 2.0 * footprint_m < rock_min_detect_diameter_m:
+            continue
+        row = int((rock["y_m"] + rock_shift_xy_m[1] + half_world) / actual_resolution_m)
+        col = int((rock["x_m"] + rock_shift_xy_m[0] + half_world) / actual_resolution_m)
         radius_cells = max(1, int(round(footprint_m / actual_resolution_m)))
         r0, r1 = max(0, row - radius_cells), min(rows, row + radius_cells + 1)
         c0, c1 = max(0, col - radius_cells), min(cols, col + radius_cells + 1)
@@ -143,6 +159,42 @@ def build_costmap(
     return cost_grid, actual_resolution_m, -half_world, -half_world
 
 
+def build_apriori_costmap(
+    manifest: dict,
+    heightmap: np.ndarray,
+    resolution_m: float,
+    rover_radius_m: float,
+    slope_lethal_deg: float,
+    dem_post_m: float = 0.0,
+    dem_noise_m: float = 0.0,
+    dem_shift_m: float = 0.0,
+    dem_shift_bearing_deg=None,
+    dem_noise_seed: int = 0,
+    rock_min_detect_diameter_m: float = 0.0,
+) -> tuple:
+    """`build_costmap` on the rover's a-priori map instead of on the generator's truth.
+
+    The height layer comes from `degrade_dem` (the same call, seed and shift the
+    terrain matcher makes, so both see one map) and the rock layer is filtered and
+    displaced to match. Returns what `build_costmap` returns. With every argument
+    at its default nothing is degraded and the result is identical to
+    `build_costmap`'s, which is what keeps the shipped launch unchanged.
+    """
+    if dem_post_m or dem_noise_m or dem_shift_m:
+        # Native post spacing, as terrain_relative_node computes it.
+        native_m = float(manifest["world_size_m"]) / (heightmap.shape[0] - 1)
+        heightmap, _ = degrade_dem(
+            heightmap, native_m, post_m=dem_post_m, noise_m=dem_noise_m,
+            shift_m=dem_shift_m, noise_seed=dem_noise_seed,
+            shift_bearing_deg=dem_shift_bearing_deg,
+        )
+    shift_xy = shift_vector_m(dem_shift_m, dem_shift_bearing_deg) if dem_shift_m else (0.0, 0.0)
+    return build_costmap(
+        manifest, heightmap, resolution_m, rover_radius_m, slope_lethal_deg,
+        rock_shift_xy_m=shift_xy, rock_min_detect_diameter_m=rock_min_detect_diameter_m,
+    )
+
+
 def stamp_hazard(cost_grid: np.ndarray, row: int, col: int, radius_cells: int) -> int:
     """Mark a lethal disc of `radius_cells` around (row, col). Returns cells marked.
 
@@ -172,6 +224,19 @@ class CostmapNode(Node):
         # that caused the previous one). Marking hazards is what a real rover's
         # FDIR does with a bumper/stall event, not a simulation shortcut.
         self.declare_parameter("hazard_radius_m", 1.2)
+        # The a-priori map the planner sees (docs/TRL4_BASELINE.md, gap G9). All
+        # default to "perfect": the generator's heightmap plus every rock at its
+        # exact position, which is a hazard oracle no mission has. The dem_* values
+        # mean exactly what they do on terrain_relative_node, and the registration
+        # shift moves the rocks with the DEM. dem_shift_bearing_deg NaN = not set
+        # = the legacy diagonal. rock_min_detect_diameter_m drops rocks too small
+        # to be seen from orbit (0 = every rock).
+        self.declare_parameter("dem_post_m", 0.0)
+        self.declare_parameter("dem_noise_m", 0.0)
+        self.declare_parameter("dem_shift_m", 0.0)
+        self.declare_parameter("dem_shift_bearing_deg", float("nan"))
+        self.declare_parameter("dem_noise_seed", 0)
+        self.declare_parameter("rock_min_detect_diameter_m", 0.0)
 
         resolution_m = self.get_parameter("resolution_m").value
         if resolution_m <= 0.0:
@@ -190,13 +255,30 @@ class CostmapNode(Node):
             )
             raise SystemExit(1)
 
-        cost_grid, resolution_m, origin_x, origin_y = build_costmap(
+        dem_post_m = float(self.get_parameter("dem_post_m").value)
+        dem_noise_m = float(self.get_parameter("dem_noise_m").value)
+        dem_shift_m = float(self.get_parameter("dem_shift_m").value)
+        min_rock_m = float(self.get_parameter("rock_min_detect_diameter_m").value)
+        cost_grid, resolution_m, origin_x, origin_y = build_apriori_costmap(
             manifest,
             heightmap,
             resolution_m,
             self.get_parameter("rover_radius_m").value,
             self.get_parameter("slope_lethal_deg").value,
+            dem_post_m=dem_post_m,
+            dem_noise_m=dem_noise_m,
+            dem_shift_m=dem_shift_m,
+            dem_shift_bearing_deg=bearing_from_param(
+                self.get_parameter("dem_shift_bearing_deg").value),
+            dem_noise_seed=int(self.get_parameter("dem_noise_seed").value),
+            rock_min_detect_diameter_m=min_rock_m,
         )
+        if dem_post_m or dem_noise_m or dem_shift_m or min_rock_m:
+            self.get_logger().warn(
+                f"COSTMAP BUILT FROM A DEGRADED A-PRIORI MAP: posts {dem_post_m:.2f} m, "
+                f"noise {dem_noise_m:.2f} m, registration shift {dem_shift_m:.2f} m, "
+                f"rocks under {min_rock_m:.2f} m diameter omitted. Not a perfect-oracle costmap."
+            )
         self._base_grid = cost_grid  # a-priori map, never overwritten
         self._grid = cost_grid.copy()  # base + learned hazards
         self._resolution_m = resolution_m
