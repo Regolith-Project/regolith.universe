@@ -106,6 +106,17 @@ class TerrainConfig:
     rock_tilt_max_rad: float = 0.35
 
     # Lighting
+    # Physics. Kept on the config so a campaign can set them through the same
+    # override path as the terrain envelope, and so the world file records them.
+    # The gz server's physics thread is single-threaded and is what bounds a
+    # simulation's real-time factor on this box (measured: one core at ~100%,
+    # every other process idle), so these are the throughput levers - and they
+    # change the dynamics, so any value other than the defaults must be validated
+    # against them before it is used for a result.
+    physics_max_step_size_s: float = 0.001
+    # '' = gz-physics' default for DART. Otherwise one of fcl, bullet, ode, dart.
+    physics_collision_detector: str = ""
+
     sun_elevation_deg: float = 12.0
     sun_azimuth_deg: float = 235.0
     # Scene ambient. Near-black by default and deliberately so: with no atmosphere to
@@ -341,3 +352,46 @@ class TerrainConfig:
     def __post_init__(self) -> None:
         if self.heightmap_resolution_px % 2 == 0:
             raise ValueError("heightmap_resolution_px should be odd (2^n + 1)")
+
+
+def apply_overrides(cfg: TerrainConfig, spec: str) -> TerrainConfig:
+    """Return `cfg` with fields replaced from a 'name=value,name=value' string.
+
+    This is how a campaign samples the terrain envelope (crater and rock density,
+    regional slope) without the generator growing one launch argument per field.
+    Each value is coerced to the type of the field's current value, so
+    'crater_count=150' stays an int. An unknown name or a tuple-valued field is a
+    hard error: a misspelt override that silently did nothing would leave a
+    campaign sampling one point of the envelope while recording another.
+    """
+    import dataclasses
+
+    spec = (spec or "").strip()
+    if not spec:
+        return cfg
+    fields = {f.name for f in dataclasses.fields(cfg)}
+    changes = {}
+    for item in spec.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        name, sep, raw = item.partition("=")
+        name, raw = name.strip(), raw.strip()
+        if not sep or not raw:
+            raise ValueError(f"terrain override '{item}' is not name=value")
+        if name not in fields or name == "seed":
+            raise ValueError(f"unknown terrain override '{name}'")
+        current = getattr(cfg, name)
+        if isinstance(current, bool):
+            if raw.lower() not in ("true", "false"):
+                raise ValueError(f"terrain override '{name}' needs true/false, got '{raw}'")
+            changes[name] = raw.lower() == "true"
+        elif isinstance(current, int):
+            changes[name] = int(raw)
+        elif isinstance(current, float):
+            changes[name] = float(raw)
+        elif isinstance(current, str):
+            changes[name] = raw
+        else:
+            raise ValueError(f"terrain override '{name}' has unsupported type {type(current).__name__}")
+    return dataclasses.replace(cfg, **changes)

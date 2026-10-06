@@ -78,6 +78,10 @@ def _release_domain_claim(lock_path: Path) -> None:
         pass
 
 
+def visual_odometry_enabled_for_cameras(context) -> bool:
+    return LaunchConfiguration("visual_odometry").perform(context).lower() == "true"
+
+
 def _allocate_domain_id() -> int:
     """Claim a ROS_DOMAIN_ID no concurrently-live regolith launch is using and export it into os.environ, so every process this launch subsequently spawns (gz sim, the ros_gz bridge, EKF, planner, rviz, ...) shares one DDS domain that is isolated from any other launch's domain.
 
@@ -282,6 +286,21 @@ def _generate_and_launch(context, *args, **kwargs):
         f"(isolated DDS domain for this launch - see PROGRESS.md)",
         flush=True,
     )
+    # ROS_DOMAIN_ID isolates only the ROS graph. gz-sim and gz-transport traffic
+    # lives on gz's own partition, so two launches of the same world name used to
+    # share one gz bus: a leftover server once starved a new run's /clock, and
+    # concurrent campaign cells were impossible. A private partition per launch,
+    # exported the same way and for the same reason as the domain id above, closes
+    # that. An explicitly-set GZ_PARTITION is honoured as-is.
+    gz_partition = os.environ.get("GZ_PARTITION", "").strip()
+    if not gz_partition:
+        gz_partition = f"regolith_d{domain_id}_p{os.getpid()}"
+        os.environ["GZ_PARTITION"] = gz_partition
+    print(
+        f"[hello_moon.launch] Using GZ_PARTITION={gz_partition} "
+        f"(isolated gz-transport partition for this launch)",
+        flush=True,
+    )
 
     raw_seed = LaunchConfiguration("seed").perform(context)
     try:
@@ -293,6 +312,15 @@ def _generate_and_launch(context, *args, **kwargs):
             f"Launch argument 'seed' must be a non-negative integer, got '{raw_seed}'"
         ) from None
     cfg = TerrainConfig(seed=seed)
+    # Envelope sampling: a campaign varies crater/rock density and regional slope
+    # per cell. Applied before anything is generated, so the world, the manifest
+    # and the costmap built from it all describe the same terrain.
+    terrain_overrides = LaunchConfiguration("terrain_overrides").perform(context)
+    if terrain_overrides.strip():
+        from regolith_terrain_gen.config import apply_overrides
+
+        cfg = apply_overrides(cfg, terrain_overrides)
+        print(f"[hello_moon.launch] TERRAIN OVERRIDES: {terrain_overrides}", flush=True)
     # Media capture only: the shipped lighting is a 12-degree sun over a near-black
     # ambient, which is what a low lunar sun actually looks like and what every
     # measurement in this repo was taken under. It also renders most of the surface
@@ -311,7 +339,11 @@ def _generate_and_launch(context, *args, **kwargs):
         cfg = dataclasses.replace(
             cfg, sun_elevation_deg=18.0, scene_ambient=(0.07, 0.07, 0.08)
         )
-    output_dir = default_output_dir(seed)
+    # world_dir lets concurrent launches of the same seed each generate into their
+    # own directory. They used to share ~/.cache/regolith/worlds/seed_<N> and could
+    # overwrite each other's world files mid-load.
+    world_dir = LaunchConfiguration("world_dir").perform(context).strip()
+    output_dir = Path(world_dir).expanduser() if world_dir else default_output_dir(seed)
     world_sdf_path = generate_world(cfg, output_dir, start_paused=False)
     manifest_path = output_dir / "manifest.json"
 
@@ -326,8 +358,12 @@ def _generate_and_launch(context, *args, **kwargs):
         + "/urdf/regolith_rover.urdf.xacro"
     )
     cine_camera = LaunchConfiguration("cine_camera").perform(context)
+    nav_cameras = LaunchConfiguration("nav_cameras").perform(context).lower()
+    if nav_cameras == "false" and visual_odometry_enabled_for_cameras(context):
+        raise RuntimeError("nav_cameras:=false removes the sensors visual_odometry:=true reads")
     urdf_xml = xacro.process_file(
-        xacro_path, mappings={"record_video": record_video, "cine_camera": cine_camera}
+        xacro_path, mappings={"record_video": record_video, "cine_camera": cine_camera,
+                              "nav_cameras": nav_cameras}
     ).toxml()
     rover_urdf_path = output_dir / "rover.urdf"
     rover_urdf_path.write_text(urdf_xml)
@@ -732,6 +768,26 @@ def generate_launch_description() -> LaunchDescription:
         [
             DeclareLaunchArgument(
                 "seed", default_value="42", description="Terrain generation seed"
+            ),
+            DeclareLaunchArgument(
+                "world_dir",
+                default_value="",
+                description="Directory to generate the world into. Empty means "
+                "~/.cache/regolith/worlds/seed_<N>. Set a distinct one per launch when "
+                "running several launches of the same seed concurrently",
+            ),
+            DeclareLaunchArgument(
+                "nav_cameras",
+                default_value="true",
+                description="Whether the rover carries its navigation RGB + depth cameras. Only "
+                "visual odometry reads them; turning them off removes per-frame GPU "
+                "rendering, which is what limits concurrent campaign cells",
+            ),
+            DeclareLaunchArgument(
+                "terrain_overrides",
+                default_value="",
+                description="Comma-separated name=value TerrainConfig overrides, e.g. "
+                "'crater_count=150,rock_count=200'. Empty means the generator defaults",
             ),
             DeclareLaunchArgument(
                 "mission",

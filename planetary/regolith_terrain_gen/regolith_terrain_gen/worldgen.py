@@ -315,13 +315,17 @@ def build_world_sdf(
     if cfg.farfield_enabled and farfield_mesh_obj is not None:
         extra_models += farfield_model_sdf(cfg, farfield_mesh_obj, texture_pngs)
 
+    dart_block = (
+        f"\n      <dart><collision_detector>{cfg.physics_collision_detector}</collision_detector></dart>"
+        if cfg.physics_collision_detector else ""
+    )
     return f"""<?xml version="1.0"?>
 <sdf version="1.10">
   <world name="regolith_moon">
     <gravity>0 0 -1.62</gravity>
     <physics name="default_physics" type="dart">
-      <max_step_size>0.001</max_step_size>
-      <real_time_factor>1.0</real_time_factor>
+      <max_step_size>{cfg.physics_max_step_size_s}</max_step_size>
+      <real_time_factor>1.0</real_time_factor>{dart_block}
     </physics>
     <plugin filename="gz-sim-physics-system" name="gz::sim::systems::Physics"/>
     <plugin filename="gz-sim-scene-broadcaster-system" name="gz::sim::systems::SceneBroadcaster"/>

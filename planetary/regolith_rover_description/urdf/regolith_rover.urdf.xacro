@@ -25,6 +25,13 @@
        angles at once - worth the extra render cost when what you want on film
        (a rover bogging down) happens when it happens and cannot be re-staged. -->
   <xacro:arg name="cine_camera" default="none"/>
+  <!-- nav_cameras: whether the navigation RGB + depth sensors exist at all. Their only
+       consumer is regolith_visual_odometry, which is off by default, but gz renders
+       them every frame regardless, and on a shared GPU that rendering is what limits
+       how many simulations can run concurrently. A campaign that runs without visual
+       odometry sets this false. camera_link and its joint stay, so the TF tree is
+       identical either way. -->
+  <xacro:arg name="nav_cameras" default="true"/>
 
   <!-- Leo-Rover-sized 4-wheel skid-steer chassis.
        Widened track + lowered chassis (vs. an earlier, narrower revision) after
@@ -344,6 +351,7 @@
     <child link="camera_link"/>
     <origin xyz="${chassis_length/2.0} 0 ${chassis_height/2.0 + 0.03}" rpy="0 0.25 0"/>
   </joint>
+  <xacro:if value="$(arg nav_cameras)">
   <gazebo reference="camera_link">
     <sensor name="camera" type="camera">
       <always_on>true</always_on>
@@ -397,6 +405,7 @@
       </camera>
     </sensor>
   </gazebo>
+  </xacro:if>
 
   <!-- See the cine_camera arg at the top of this file. Rigidly fixed to the chassis,
        so the horizon pitches and rolls with the rover - that motion is the point. -->
