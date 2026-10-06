@@ -409,6 +409,12 @@ def _generate_and_launch(context, *args, **kwargs):
         parameters=[{"robot_description": urdf_xml, "use_sim_time": True}],
     )
 
+    # imu_error_model:=true moves gz's ideal IMU to /sim/imu_ideal and puts
+    # imu_error_model_node.py between it and /imu, so every consumer reads a
+    # sensor with realistic bias, noise and heading drift instead of the
+    # simulator's exact attitude. docs/TRL4_BASELINE.md, gap G3.
+    imu_error_model = LaunchConfiguration("imu_error_model").perform(context).lower() == "true"
+    imu_remap = [("/imu", "/sim/imu_ideal")] if imu_error_model else []
     bridge = Node(
         package="ros_gz_bridge",
         executable="parameter_bridge",
@@ -437,7 +443,16 @@ def _generate_and_launch(context, *args, **kwargs):
             ("/depth_camera", "/camera/depth"),
             (f"/world/{WORLD_NAME}/model/{ROVER_NAME}/joint_state", "/joint_states"),
             (f"/model/{ROVER_NAME}/pose", "/ground_truth/pose"),
-        ],
+        ] + imu_remap,
+    )
+    imu_error_model_node = Node(
+        package="regolith_bringup",
+        executable="imu_error_model_node.py",
+        output="screen",
+        parameters=[{
+            "use_sim_time": True,
+            "imu_noise_seed": int(LaunchConfiguration("imu_noise_seed").perform(context)),
+        }],
     )
 
     # See PROGRESS.md M3 for why this relay is necessary (gz-sim publishes all-zero
@@ -762,6 +777,8 @@ def _generate_and_launch(context, *args, **kwargs):
             ("parameter_bridge", bridge),
             ("wheel_slip_node", wheel_slip_node),
             ("sensor_covariance_relay", sensor_covariance_relay),
+            # Without it /imu goes silent and the EKF loses attitude: tear down.
+            *([("imu_error_model_node", imu_error_model_node)] if imu_error_model else []),
             # If VO dies mid-run the rover silently reverts to the sensor suite that
             # scored 0/3, and the run would still report a number. Tear down instead.
             *([("visual_odometry_node", visual_odometry_node)] if use_visual_odometry else []),
@@ -788,6 +805,7 @@ def _generate_and_launch(context, *args, **kwargs):
         terrain_relative_node,
         *([visual_odometry_node] if use_visual_odometry else []),
         sensor_covariance_relay,
+        *([imu_error_model_node] if imu_error_model else []),
         ekf_node,
         costmap_node,
         planner_node,
@@ -895,6 +913,19 @@ def generate_launch_description() -> LaunchDescription:
                 "(0 = +x, 90 = +y, counter-clockwise); dem_shift_m is then the "
                 "MAGNITUDE. Empty = unset = the legacy fixed diagonal (dem_shift_m on "
                 "both axes).",
+            ),
+            DeclareLaunchArgument(
+                "imu_error_model",
+                default_value="false",
+                description="Give the rover a realistic IMU: residual biases, noise, an "
+                "initial heading error and gyro heading drift, instead of gz-sim's exact "
+                "attitude (which the EKF fuses as absolute heading). See "
+                "imu_error_model_node.py and docs/TRL4_BASELINE.md, gap G3",
+            ),
+            DeclareLaunchArgument(
+                "imu_noise_seed",
+                default_value="0",
+                description="RNG seed for imu_error_model's per-run biases and noise",
             ),
             DeclareLaunchArgument(
                 "costmap_prior",
