@@ -607,7 +607,14 @@ class CostmapNode(Node):
             f"({self._origin[0] + (c + 0.5) * self._resolution_m:.1f},"
             f"{self._origin[1] + (r + 0.5) * self._resolution_m:.1f})"
             for r, c in sorted(cells))
-        self.get_logger().info(f"Hazcam: {len(newly)} cells newly lethal{note}; detected at [{seen}]")
+        # Sim time and the rover's own estimate at the time, so a detection can be
+        # lined up against the recorded signals (attitude transients, turns) when
+        # diagnosing false positives offline.
+        sim_t = self.get_clock().now().nanoseconds / 1e9
+        rover = (f"({self._rover_xy[0]:.1f},{self._rover_xy[1]:.1f})"
+                 if self._rover_xy is not None else "unknown")
+        self.get_logger().info(f"Hazcam: {len(newly)} cells newly lethal{note}; detected at [{seen}]; "
+                               f"sim_t={sim_t:.2f} rover_est={rover}")
 
     def _hazcam_replan_tick(self) -> None:
         # Deferred to a timer rather than sent from the callback: the updated costmap
