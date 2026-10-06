@@ -82,6 +82,20 @@ def visual_odometry_enabled_for_cameras(context) -> bool:
     return LaunchConfiguration("visual_odometry").perform(context).lower() == "true"
 
 
+def hazcam_enabled(context) -> bool:
+    return LaunchConfiguration("hazcam").perform(context).lower() == "true"
+
+
+def hazcam_launch_check(context) -> None:
+    """hazcam:=true reads the depth camera; nav_cameras:=false removes it from the rover."""
+    nav_cameras = LaunchConfiguration("nav_cameras").perform(context).lower()
+    if hazcam_enabled(context) and nav_cameras != "true":
+        raise RuntimeError(
+            f"hazcam:=true needs the depth camera, and nav_cameras:={nav_cameras} removes it. "
+            "Pass nav_cameras:=true (the default) with hazcam:=true."
+        )
+
+
 def _allocate_domain_id() -> int:
     """Claim a ROS_DOMAIN_ID no concurrently-live regolith launch is using and export it into os.environ, so every process this launch subsequently spawns (gz sim, the ros_gz bridge, EKF, planner, rviz, ...) shares one DDS domain that is isolated from any other launch's domain.
 
@@ -270,6 +284,10 @@ def _generate_and_launch(context, *args, **kwargs):
     from regolith_terrain_gen.config import TerrainConfig
     from regolith_terrain_gen.generate import generate_world_shared
     import xacro
+
+    # Refused before anything is generated or allocated: world generation peaks at
+    # about 4.5 GB, which is a lot to spend on a launch that cannot run.
+    hazcam_launch_check(context)
 
     # Claim a private ROS_DOMAIN_ID *first*, before any of the actions returned
     # below are built or spawned. Mutating os.environ here (inside the running
@@ -655,6 +673,24 @@ def _generate_and_launch(context, *args, **kwargs):
             "costmap_prior:=perfect.",
             flush=True,
         )
+    # Onboard hazard layer (docs/TRL4_BASELINE.md gap G10): hazcam_node turns the
+    # depth camera into obstacle points in odom, and costmap_node marks them lethal
+    # and re-sends the goal when one blocks the current path. Off by default: the
+    # reference configuration RC-1 has no vision in the loop (limitation L4).
+    use_hazcam = hazcam_enabled(context)
+    costmap_params["hazcam"] = use_hazcam
+    hazcam_node = Node(
+        package="regolith_costmap",
+        executable="hazcam_node",
+        output="screen",
+        parameters=[{"use_sim_time": True}],
+    )
+    if use_hazcam:
+        print(
+            "[hello_moon.launch] HAZCAM ON: obstacles seen by the depth camera are marked "
+            "in the planner's costmap (step >= 0.15 m, out to 6 m).",
+            flush=True,
+        )
     costmap_node = Node(
         package="regolith_costmap",
         executable="costmap_node",
@@ -799,6 +835,9 @@ def _generate_and_launch(context, *args, **kwargs):
             # number, which would be a result attributed to the wrong stack.
             *([("terrain_relative_node", terrain_relative_node)] if terrain_relative else []),
             ("ekf_node", ekf_node),
+            # A dead hazcam would leave the run going on the a-priori map alone and
+            # still reporting a result attributed to the hazcam configuration.
+            *([("hazcam_node", hazcam_node)] if use_hazcam else []),
             ("costmap_node", costmap_node),
             ("planner_node", planner_node),
             ("pure_pursuit_node", pure_pursuit_node),
@@ -819,6 +858,7 @@ def _generate_and_launch(context, *args, **kwargs):
         sensor_covariance_relay,
         *([imu_error_model_node] if imu_error_model else []),
         ekf_node,
+        *([hazcam_node] if use_hazcam else []),
         costmap_node,
         planner_node,
         pure_pursuit_node,
@@ -848,8 +888,17 @@ def generate_launch_description() -> LaunchDescription:
                 "nav_cameras",
                 default_value="true",
                 description="Whether the rover carries its navigation RGB + depth cameras. Only "
-                "visual odometry reads them; turning them off removes per-frame GPU "
+                "visual odometry and the hazcam read them; turning them off removes per-frame GPU "
                 "rendering, which is what limits concurrent campaign cells",
+            ),
+            DeclareLaunchArgument(
+                "hazcam",
+                default_value="false",
+                description="Onboard hazard layer from the depth camera (docs/TRL4_BASELINE.md "
+                "gap G10): obstacles with a local step of 0.15 m or more, out to 6 m, are "
+                "marked lethal in the planner's costmap, and the goal is re-sent when one "
+                "blocks the current path. Requires nav_cameras:=true. Off by default: "
+                "RC-1 has no vision in the loop",
             ),
             DeclareLaunchArgument(
                 "terrain_overrides",

@@ -21,6 +21,7 @@ setup(
     entry_points={
         "console_scripts": [
             "costmap_node = regolith_costmap.costmap_node:main",
+            "hazcam_node = regolith_costmap.hazcam_node:main",
         ],
     },
 )
