@@ -601,7 +601,13 @@ class CostmapNode(Node):
         if blocking:
             self._replan.request()
         note = f", {len(blocking)} on the path ahead - replan requested" if blocking else ""
-        self.get_logger().info(f"Hazcam: {len(newly)} cells newly lethal{note}")
+        # The detected cells (before inflation), in odom: what an offline check
+        # compares against the world's rocks to count true and false detections.
+        seen = ", ".join(
+            f"({self._origin[0] + (c + 0.5) * self._resolution_m:.1f},"
+            f"{self._origin[1] + (r + 0.5) * self._resolution_m:.1f})"
+            for r, c in sorted(cells))
+        self.get_logger().info(f"Hazcam: {len(newly)} cells newly lethal{note}; detected at [{seen}]")
 
     def _hazcam_replan_tick(self) -> None:
         # Deferred to a timer rather than sent from the callback: the updated costmap
