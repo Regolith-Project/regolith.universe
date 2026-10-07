@@ -138,6 +138,15 @@ def escape_verdict(odom_reverse_m: float, gyro_turn_rad: float, commanded_turn_r
     return True, f"wheels reversed {odom_reverse_m:.2f} m (turn too small to judge)"
 
 
+def escape_tilt_exceeded(roll: float, pitch: float, limit_rad: float) -> bool:
+    """True when an escape maneuver must stop because the chassis is tilting past
+    the limit. The maneuver used to be blind to attitude - flip and stuck detection
+    are paused while it runs - and a development-campaign rover reversed straight up
+    the flank of a 2.8 m boulder it had wedged against, to roll 31 / pitch 45 deg,
+    and flipped (PROGRESS.md, "The escape that climbed a boulder")."""
+    return abs(roll) > limit_rad or abs(pitch) > limit_rad
+
+
 def hazard_too_close_to_goal(hazard_xy: tuple, goal_xy: tuple, clearance_m: float) -> bool:
     """Check whether a keep-out zone at hazard_xy would risk covering the goal.
 
@@ -190,6 +199,9 @@ class FlipRecoveryNode(Node):
         # Onboard escape verdict - see escape_verdict().
         self.declare_parameter("escape_min_turn_ratio", 0.145)
         self.declare_parameter("escape_min_commanded_turn_rad", 0.3)
+        # Stop an escape maneuver when onboard attitude passes this - see
+        # escape_tilt_exceeded. 25 deg is this node's own "safe" attitude.
+        self.declare_parameter("escape_tilt_limit_deg", 25.0)
         self.declare_parameter(
             "escape_check_delay_s", 1.0
         )  # sim time to wait before judging the result
@@ -775,6 +787,21 @@ class FlipRecoveryNode(Node):
         if e is None:
             return
         t = self._now_s()
+        pose = self._detection_pose()
+        if pose is not None:
+            roll, pitch, _ = _roll_pitch_yaw(pose.orientation)
+            limit = math.radians(self.get_parameter("escape_tilt_limit_deg").value)
+            if escape_tilt_exceeded(roll, pitch, limit):
+                self._stop()
+                self._escapes_tilt_aborted = getattr(self, "_escapes_tilt_aborted", 0) + 1
+                self.get_logger().error(
+                    f"ESCAPE ABORTED - TILT: roll {math.degrees(roll):.0f} deg, pitch "
+                    f"{math.degrees(pitch):.0f} deg during the {e['state']} phase exceeds "
+                    f"{math.degrees(limit):.0f} deg. Stopping rather than driving on into a "
+                    f"rollover ({self._escapes_tilt_aborted} tilt aborts so far)."
+                )
+                self._finish_escape(e, t)
+                return
         cmd = Twist()
         if e["state"] == "reverse":
             cmd.linear.x = -e["reverse_speed"]
