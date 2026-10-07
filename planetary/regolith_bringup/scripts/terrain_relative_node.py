@@ -286,6 +286,45 @@ def match_offset_with_bias(
     return dx, dy, margin, est_bias
 
 
+def shrunk_bias(samples, prior_rad: float) -> tuple:
+    """The attitude bias to remove: the median of every unambiguous window's own
+    bias estimate, shrunk toward zero by a prior of `prior_rad` (the IMU's specified
+    tilt-bias sigma).
+
+    Freezing the median of the first five windows (the original estimate_attitude_bias)
+    invented biases the sensor did not have: +0.83 deg of roll on a map with 1.3 cm of
+    vertical noise, more than twice the IMU model's whole sigma, and -0.48 deg with a
+    PERFECT IMU - map noise read as attitude error, then subtracted from a correct
+    attitude (PROGRESS.md, "The RC-1 development campaign on mesh ground"). Shrinkage
+    weighs the sample median's precision against the prior's, so a few noisy windows
+    cannot claim more bias than the sensor plausibly has, and many consistent windows
+    can.
+    """
+    if not len(samples):
+        return (0.0, 0.0)
+    arr = np.asarray(samples, dtype=float)
+    med = np.median(arr, axis=0)
+    spread = np.maximum(arr.std(axis=0), math.radians(0.05))
+    se2 = (1.2533 * spread) ** 2 / len(arr)  # variance of a sample median
+    return tuple(float(v) for v in med * prior_rad**2 / (prior_rad**2 + se2))
+
+
+def auto_prefilter_m(declared_noise_m: float) -> float:
+    """DEM smoothing length chosen from the map's DECLARED vertical precision.
+
+    Smoothing trades slope signal for slope noise: on the development campaign's 20
+    RC-1 runs, 2 m rescued every map with >= 1.28 cm of noise (3.2 -> 0.57 m, 2.9 ->
+    0.43 m) and wrecked clean ones (0.35 cm: 0.32 -> 2.47 m). No single length served
+    the envelope; a mission knows its DTM's stated precision, so it chooses. The 0.8 cm
+    threshold is about 1.1 deg of spurious slope at 0.4 m posts, the size of this
+    site's real slope signal. Fitted on development data; the held-out qualification
+    seeds are its test.
+    """
+    if declared_noise_m is None or declared_noise_m < 0:
+        return 0.0
+    return 1.0 if declared_noise_m < 0.008 else 2.0
+
+
 class Sample(NamedTuple):
     """One buffered observation. Named because the tuple indices were a live bug.
 
@@ -415,6 +454,10 @@ class TerrainRelativeNode(Node):
         # every banked terrain-relative number keeps its meaning; on in RC-1.
         self.declare_parameter("estimate_attitude_bias", False)
         self.declare_parameter("bias_samples_needed", 5)
+        # "freeze": the original - median of the first bias_samples_needed windows.
+        # "shrink": every window, shrunk toward attitude_bias_prior_deg (shrunk_bias).
+        self.declare_parameter("bias_mode", "freeze")
+        self.declare_parameter("attitude_bias_prior_deg", 0.35)
         self.declare_parameter("consistency_m", 1.5)
         # How far one publish may ask the filter to move. See clamp_correction.
         self.declare_parameter("max_step_m", 0.5)
@@ -455,6 +498,10 @@ class TerrainRelativeNode(Node):
         # net loss (0.71 -> 1.66 m median in replay), and it only pays when the
         # DEM's vertical accuracy is known to be poor - which a mission does know.
         self.declare_parameter("dem_prefilter_m", 0.0)
+        # The map product's stated vertical precision, if the mission has one, and
+        # whether to choose dem_prefilter_m from it (auto_prefilter_m). -1 = unknown.
+        self.declare_parameter("dem_declared_noise_m", -1.0)
+        self.declare_parameter("dem_prefilter_auto", False)
 
         self._window_m = float(self.get_parameter("window_m").value)
         self._publish_hz = float(self.get_parameter("publish_hz").value)
@@ -468,6 +515,8 @@ class TerrainRelativeNode(Node):
         self._bias_needed = int(self.get_parameter("bias_samples_needed").value)
         self._bias_samples = []  # per-window bias estimates while still fitting
         self._attitude_bias = (0.0, 0.0) if not self._estimate_bias else None
+        self._bias_mode = str(self.get_parameter("bias_mode").value)
+        self._bias_prior = math.radians(float(self.get_parameter("attitude_bias_prior_deg").value))
         self._consistency_m = float(self.get_parameter("consistency_m").value)
         self._max_step_m = float(self.get_parameter("max_step_m").value)
         self._correction_interval_m = float(self.get_parameter("correction_interval_m").value)
@@ -477,6 +526,12 @@ class TerrainRelativeNode(Node):
         dem_shift_m = float(self.get_parameter("dem_shift_m").value)
         dem_noise_seed = int(self.get_parameter("dem_noise_seed").value)
         dem_prefilter_m = float(self.get_parameter("dem_prefilter_m").value)
+        if bool(self.get_parameter("dem_prefilter_auto").value):
+            declared = float(self.get_parameter("dem_declared_noise_m").value)
+            dem_prefilter_m = auto_prefilter_m(declared)
+            self.get_logger().warn(
+                f"DEM prefilter chosen from the map's declared vertical precision "
+                f"({declared:.3f} m): {dem_prefilter_m:.1f} m.")
         dem_shift_bearing_deg = bearing_from_param(
             self.get_parameter("dem_shift_bearing_deg").value)
 
@@ -720,7 +775,30 @@ class TerrainRelativeNode(Node):
         # so a correction the filter absorbs moves the window with it.
         xs, ys = reconstruct_window(arr[:, 0], arr[:, 1], self._track[0], self._track[1])
         yaws, rolls, pitches = arr[:, 2], arr[:, 3], arr[:, 4]
-        fitting = self._attitude_bias is None
+        if self._estimate_bias and self._bias_mode == "shrink":
+            dx, dy, margin = self._match_shrink(xs, ys, yaws, rolls, pitches)
+        else:
+            fitting = self._attitude_bias is None
+            dx, dy, margin, _ = self._match_freeze(xs, ys, yaws, rolls, pitches, fitting)
+        self._after_match(dx, dy, margin)
+
+    def _match_shrink(self, xs, ys, yaws, rolls, pitches):
+        """Every window: fit the bias jointly (its estimate feeds shrunk_bias), then
+        match absolutely with the shrunk estimate removed - fit-only until five
+        unambiguous windows exist."""
+        args = (self._gx, self._gy, self._world_m, self._res_m, xs, ys, yaws, rolls, pitches)
+        fdx, fdy, fmargin, fbias = match_offset_with_bias(
+            *args, search_m=self._search_m, step_m=self._step_m, fit_bias=True)
+        if fmargin >= self._min_margin:
+            self._bias_samples.append(fbias)
+        if len(self._bias_samples) < 5:
+            return fdx, fdy, fmargin
+        self._attitude_bias = shrunk_bias(self._bias_samples, self._bias_prior)
+        dx, dy, margin, _ = match_offset_with_bias(
+            *args, search_m=self._search_m, step_m=self._step_m, bias=self._attitude_bias)
+        return dx, dy, margin
+
+    def _match_freeze(self, xs, ys, yaws, rolls, pitches, fitting):
         dx, dy, margin, window_bias = match_offset_with_bias(
             self._gx,
             self._gy,
@@ -746,7 +824,9 @@ class TerrainRelativeNode(Node):
                     f"{math.degrees(self._attitude_bias[1]):+.3f} deg. Matching absolutely with "
                     "it removed from here on."
                 )
+        return dx, dy, margin, window_bias
 
+    def _after_match(self, dx, dy, margin):
         if margin < self._min_margin:
             self._fixes_rejected_margin += 1
             self.get_logger().info(

@@ -629,6 +629,9 @@ def _generate_and_launch(context, *args, **kwargs):
             "dem_shift_bearing_deg": dem_shift_bearing_deg,
             "estimate_attitude_bias": LaunchConfiguration(
                 "terrain_relative_bias_estimation").perform(context).lower() == "true",
+            "bias_mode": LaunchConfiguration("terrain_relative_bias_mode").perform(context),
+            "dem_prefilter_auto": LaunchConfiguration("dem_prefilter_auto").perform(context).lower() == "true",
+            "dem_declared_noise_m": float(LaunchConfiguration("dem_declared_noise_m").perform(context)),
         }],
         condition=IfCondition(LaunchConfiguration("terrain_relative")),
     )
@@ -982,6 +985,25 @@ def generate_launch_description() -> LaunchDescription:
                 "matching absolutely (terrain_relative_node.match_offset_with_bias). Needed "
                 "with any realistic IMU: an uncorrected 0.8 deg tilt bias takes the matcher "
                 "from 0.38 m to 1.34 m median error in replay",
+            ),
+            DeclareLaunchArgument(
+                "terrain_relative_bias_mode",
+                default_value="freeze",
+                description="'freeze': attitude bias from the first 5 unambiguous windows. "
+                "'shrink': from every window, shrunk toward the IMU's specified tilt-bias "
+                "sigma (terrain_relative_node.shrunk_bias)",
+            ),
+            DeclareLaunchArgument(
+                "dem_prefilter_auto",
+                default_value="false",
+                description="Choose dem_prefilter_m from dem_declared_noise_m "
+                "(terrain_relative_node.auto_prefilter_m)",
+            ),
+            DeclareLaunchArgument(
+                "dem_declared_noise_m",
+                default_value="-1.0",
+                description="The a-priori map product's stated vertical precision, metres "
+                "(-1 = unknown). What the mission is told about its map, not the true error",
             ),
             DeclareLaunchArgument(
                 "imu_error_model",

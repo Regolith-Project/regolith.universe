@@ -524,3 +524,27 @@ class TestAttitudeBias:
         dx, dy, _, _ = trn.match_offset_with_bias(
             gx, gy, WORLD_M, RES_M, xs, ys, yaws, rolls, pitches + pb, 4.0, 0.25, bias=(0.0, pb))
         assert math.hypot(dx - true[0], dy - true[1]) < 0.3
+
+
+class TestShrunkBiasAndAutoPrefilter:
+    def test_few_noisy_windows_cannot_claim_a_large_bias(self):
+        # Five windows scattered +-1 deg around 0.8 deg: the sample median is weak
+        # evidence, so the estimate is pulled well below it toward zero.
+        rng = np.random.default_rng(1)
+        samples = [(math.radians(0.8 + rng.normal(0, 1.0)), 0.0) for _ in range(5)]
+        est = trn.shrunk_bias(samples, math.radians(0.35))
+        assert abs(est[0]) < 0.7 * abs(np.median([s[0] for s in samples]))
+
+    def test_many_consistent_windows_recover_a_real_bias(self):
+        samples = [(math.radians(0.6), math.radians(-0.3))] * 40
+        est = trn.shrunk_bias(samples, math.radians(0.35))
+        assert est[0] == pytest.approx(math.radians(0.6), abs=math.radians(0.03))
+        assert est[1] == pytest.approx(math.radians(-0.3), abs=math.radians(0.03))
+
+    def test_no_samples_is_no_bias(self):
+        assert trn.shrunk_bias([], math.radians(0.35)) == (0.0, 0.0)
+
+    def test_prefilter_follows_declared_precision(self):
+        assert trn.auto_prefilter_m(0.005) == 1.0
+        assert trn.auto_prefilter_m(0.010) == 2.0
+        assert trn.auto_prefilter_m(-1.0) == 0.0
