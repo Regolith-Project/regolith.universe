@@ -809,16 +809,22 @@ class TerrainRelativeNode(Node):
         self._after_match(dx, dy, margin)
 
     def _match_shrink(self, xs, ys, yaws, rolls, pitches):
-        """Every window: fit the bias jointly (its estimate feeds shrunk_bias), then
-        match absolutely with the shrunk estimate removed - fit-only until five
-        unambiguous windows exist."""
+        """Match absolutely with the CURRENT shrunk bias estimate removed, every
+        window; fit the bias jointly alongside only to feed that estimate.
+
+        An earlier version matched in fit mode until five unambiguous windows had
+        estimated the bias. Fit-mode margins run lower, so on noisy maps the five
+        rarely came: the confirmation campaign's matcher accepted a median 38 fixes
+        a run against 80 in freeze mode, and 7 of its 9 runs on maps with 0.96 cm or
+        more of noise got 0-10 fixes - terrain matching was effectively off where it
+        mattered most (PROGRESS.md, "A regression in the shrink mode"). With no
+        samples, shrunk_bias is zero, so this starts as plain absolute matching.
+        """
         args = (self._gx, self._gy, self._world_m, self._res_m, xs, ys, yaws, rolls, pitches)
-        fdx, fdy, fmargin, fbias = match_offset_with_bias(
+        _, _, fmargin, fbias = match_offset_with_bias(
             *args, search_m=self._search_m, step_m=self._step_m, fit_bias=True)
         if fmargin >= self._min_margin:
             self._bias_samples.append(fbias)
-        if len(self._bias_samples) < 5:
-            return fdx, fdy, fmargin
         self._attitude_bias = shrunk_bias(self._bias_samples, self._bias_prior)
         dx, dy, margin, _ = match_offset_with_bias(
             *args, search_m=self._search_m, step_m=self._step_m, bias=self._attitude_bias)
