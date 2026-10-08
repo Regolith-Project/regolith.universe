@@ -548,3 +548,17 @@ class TestShrunkBiasAndAutoPrefilter:
         assert trn.auto_prefilter_m(0.005) == 1.0
         assert trn.auto_prefilter_m(0.010) == 2.0
         assert trn.auto_prefilter_m(-1.0) == 0.0
+
+
+class TestLocalizationConfidence:
+    def test_no_fix_yet_is_low(self):
+        assert trn.localization_confidence_low([], 0.0)
+
+    def test_weak_and_stale_is_low(self):
+        assert trn.localization_confidence_low([2.2, 2.4, 2.5], 20.0)
+
+    def test_weak_but_recent_is_not_low(self):
+        assert not trn.localization_confidence_low([2.2, 2.4, 2.5], 5.0)
+
+    def test_strong_but_stale_is_not_low(self):
+        assert not trn.localization_confidence_low([3.5, 4.0, 3.8], 30.0)

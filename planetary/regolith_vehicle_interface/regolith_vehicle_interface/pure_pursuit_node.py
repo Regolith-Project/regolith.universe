@@ -12,6 +12,8 @@ set_pose righting, after which this node's attitude check clears and following
 resumes automatically.
 """
 
+import math
+
 from geometry_msgs.msg import PoseStamped
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import OccupancyGrid
@@ -34,6 +36,28 @@ def _roll_pitch_from_quaternion(q) -> tuple:
     roll = np.arctan2(2.0 * (q.w * q.x + q.y * q.z), 1.0 - 2.0 * (q.x**2 + q.y**2))
     pitch = np.arcsin(np.clip(2.0 * (q.w * q.y - q.z * q.x), -1.0, 1.0))
     return float(roll), float(pitch)
+
+
+def choose_excursion_point(position, yaw: float, distance_m: float, cost_at,
+                           max_cost: float = 50.0):
+    """Where to drive to re-localise before claiming an arrival.
+
+    Straight ahead first - terrain the matcher has not seen yet, which is what a
+    fresh fix needs - then progressively further round, so a lethal or costly
+    cell ahead does not end the attempt. Returns (x, y), or None if every
+    candidate is too costly. `cost_at(x, y)` is the costmap cost, 0-100.
+    """
+    for offset_deg in (0, 45, -45, 90, -90, 135, -135, 180):
+        a = yaw + math.radians(offset_deg)
+        x = float(position[0]) + distance_m * math.cos(a)
+        y = float(position[1]) + distance_m * math.sin(a)
+        if cost_at(x, y) < max_cost:
+            return (x, y)
+    return None
+
+
+def _same_xy(a, b, tol: float = 1e-3) -> bool:
+    return abs(a[0] - b[0]) < tol and abs(a[1] - b[1]) < tol
 
 
 def _normalize_angle(angle: float) -> float:
@@ -164,6 +188,18 @@ class PurePursuitNode(Node):
         # node having no give-up condition at all made it far worse, and is
         # worth fixing on its own regardless of what triggers the retries.
         self.declare_parameter("max_consecutive_replans", 8)
+        # ARRIVAL CONFIDENCE. A false arrival - the rover believes it has arrived
+        # and it has not - was the one requirement the final reference
+        # configuration missed by most (R2, 3 of 20 in rc1_confirmation), and the
+        # EKF's own covariance could not tell them apart. terrain_relative_node
+        # publishes /localization/confidence_low from its recent fix evidence; with
+        # this on, arriving on low confidence sends the rover on a short excursion
+        # over unseen terrain for a fresh fix and back, up to
+        # relocalise_max_attempts times, and then reports /goal_uncertain instead
+        # of claiming an arrival it cannot support.
+        self.declare_parameter("relocalise_on_low_confidence", False)
+        self.declare_parameter("relocalise_max_attempts", 2)
+        self.declare_parameter("relocalise_excursion_m", 8.0)
 
         self._path = None
         self._current_pose = None
@@ -177,6 +213,10 @@ class PurePursuitNode(Node):
         self._replan_count = 0
         self._given_up_goal_xy = None  # (x, y) of a goal we've stopped retrying
         self._recovery_active = False
+        self._confidence_low = False
+        self._mission_goal = None     # the goal this node was commanded, not its own excursions
+        self._excursion_xy = None     # (x, y) of an in-progress relocalisation excursion
+        self._relocalise_attempts = 0
         self._terminal = TerminalApproach(
             radius_m=self.get_parameter("terminal_radius_m").value,
             tolerance_m=self.get_parameter("goal_tolerance_m").value,
@@ -205,6 +245,8 @@ class PurePursuitNode(Node):
         # commands gz-sim executed during a maneuver were still this node's,
         # driving forward into the obstacle the maneuver was reversing out of.
         self.create_subscription(Bool, "/recovery_active", self._on_recovery_active, 10)
+        self.create_subscription(Bool, "/localization/confidence_low", self._on_confidence, 10)
+        self._goal_uncertain_pub = self.create_publisher(Bool, "/goal_uncertain", 10)
         self._goal_pub = self.create_publisher(PoseStamped, "/goal_pose", 10)
         self._cmd_pub = self.create_publisher(Twist, "/cmd_vel", 10)
         self._goal_reached_pub = self.create_publisher(Bool, "/goal_reached", 10)
@@ -235,8 +277,20 @@ class PurePursuitNode(Node):
         self._last_progress_time = self.get_clock().now()
         self._last_progress_position = None
 
+    def _on_confidence(self, msg: Bool) -> None:
+        self._confidence_low = msg.data
+
     def _on_goal(self, msg: PoseStamped) -> None:
         new_xy = (msg.pose.position.x, msg.pose.position.y)
+        mission_xy = ((self._mission_goal.pose.position.x, self._mission_goal.pose.position.y)
+                      if self._mission_goal is not None else None)
+        own = self._excursion_xy is not None and _same_xy(new_xy, self._excursion_xy)
+        if not own and not (mission_xy is not None and _same_xy(new_xy, mission_xy)):
+            # A genuinely new mission goal, not this node's own excursion or its
+            # re-publication of the mission goal: fresh relocalisation budget.
+            self._mission_goal = msg
+            self._relocalise_attempts = 0
+            self._excursion_xy = None
         old_xy = (
             (self._current_goal.pose.position.x, self._current_goal.pose.position.y)
             if self._current_goal is not None
@@ -319,6 +373,46 @@ class PurePursuitNode(Node):
         (self.get_logger().warn if warn else self.get_logger().info)(message)
         self._goal_reached_pub.publish(Bool(data=True))
 
+    def _arrive(self, message: str, position, yaw: float, warn: bool = False) -> None:
+        """Arrival at the current goal, gated on localisation confidence."""
+        if self._excursion_xy is not None:
+            # The end of a relocalisation excursion: go back for the mission goal.
+            self._excursion_xy = None
+            self._terminal.reset()
+            self.get_logger().info("Relocalisation excursion done - re-approaching the goal")
+            self._goal_pub.publish(self._mission_goal)
+            return
+        if (self.get_parameter("relocalise_on_low_confidence").value and self._confidence_low
+                and self._mission_goal is not None):
+            if self._relocalise_attempts < self.get_parameter("relocalise_max_attempts").value:
+                point = choose_excursion_point(
+                    position, yaw, self.get_parameter("relocalise_excursion_m").value, self._cost_at)
+                if point is not None:
+                    self._relocalise_attempts += 1
+                    self._excursion_xy = point
+                    self._terminal.reset()
+                    excursion = PoseStamped()
+                    excursion.header.frame_id = self._mission_goal.header.frame_id or "odom"
+                    excursion.header.stamp = self.get_clock().now().to_msg()
+                    excursion.pose.position.x, excursion.pose.position.y = point
+                    excursion.pose.orientation.w = 1.0
+                    self.get_logger().warn(
+                        f"ARRIVAL WITHHELD - localisation confidence is low. Relocalisation "
+                        f"excursion {self._relocalise_attempts} to ({point[0]:.1f}, "
+                        f"{point[1]:.1f}) for a fresh terrain fix, then back.")
+                    self._goal_pub.publish(excursion)
+                    return
+            self._stop()
+            self._goal_reached = True
+            self.get_logger().error(
+                f"ARRIVAL UNCERTAIN: at the goal by its own estimate, but localisation "
+                f"confidence is still low after {self._relocalise_attempts} relocalisation "
+                "attempt(s). Reporting uncertain rather than claiming an arrival it cannot "
+                "support.")
+            self._goal_uncertain_pub.publish(Bool(data=True))
+            return
+        self._finish_goal(message, warn=warn)
+
     def _control_step(self) -> None:
         if self._recovery_active:
             # An escape maneuver drives the rover away from wherever it was, and
@@ -366,19 +460,20 @@ class PurePursuitNode(Node):
         now_s = self.get_clock().now().nanoseconds / 1e9
         outcome = self._terminal.update(distance_to_goal, now_s)
         if outcome == ARRIVED:
-            self._finish_goal(
-                f"Goal reached (within {distance_to_goal:.2f} m of the commanded goal)"
+            self._arrive(
+                f"Goal reached (within {distance_to_goal:.2f} m of the commanded goal)",
+                position, yaw,
             )
             return
         if outcome == CLOSEST_APPROACH:
             # Bounded rather than circling - see TerminalApproach. Reported as
             # the second-class arrival it is: the number that matters is how
             # close the rover actually got, and it is on the record either way.
-            self._finish_goal(
+            self._arrive(
                 f"Stopping at closest approach: {self._terminal.closest_m:.2f} m from the "
                 f"commanded goal (now {distance_to_goal:.2f} m), which is as close as this "
                 f"approach got. Tolerance is {self._terminal.tolerance_m:.2f} m.",
-                warn=True,
+                position, yaw, warn=True,
             )
             return
 

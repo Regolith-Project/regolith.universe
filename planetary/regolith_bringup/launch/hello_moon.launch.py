@@ -718,7 +718,12 @@ def _generate_and_launch(context, *args, **kwargs):
         package="regolith_vehicle_interface",
         executable="pure_pursuit_node",
         output="screen",
-        parameters=[{"use_sim_time": True, "goal_tolerance_m": goal_tolerance_m}],
+        parameters=[{
+            "use_sim_time": True,
+            "goal_tolerance_m": goal_tolerance_m,
+            "relocalise_on_low_confidence": LaunchConfiguration(
+                "relocalise_on_low_confidence").perform(context).lower() == "true",
+        }],
     )
 
     # Simulated flip recovery backstop: if the rover still ends up flipped (the
@@ -985,6 +990,13 @@ def generate_launch_description() -> LaunchDescription:
                 "matching absolutely (terrain_relative_node.match_offset_with_bias). Needed "
                 "with any realistic IMU: an uncorrected 0.8 deg tilt bias takes the matcher "
                 "from 0.38 m to 1.34 m median error in replay",
+            ),
+            DeclareLaunchArgument(
+                "relocalise_on_low_confidence",
+                default_value="false",
+                description="Withhold an arrival claim on low localisation confidence: drive a "
+                "short relocalisation excursion and back, then report /goal_uncertain if "
+                "still low (pure_pursuit_node, PROGRESS.md 'Arrival confidence')",
             ),
             DeclareLaunchArgument(
                 "terrain_relative_bias_mode",

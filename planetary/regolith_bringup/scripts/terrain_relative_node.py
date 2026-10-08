@@ -80,11 +80,13 @@ HONEST LIMITS, stated before any result is claimed:
 """
 
 import json
+from collections import deque
 import math
 from pathlib import Path
 from typing import NamedTuple
 
 from geometry_msgs.msg import PoseWithCovarianceStamped
+from std_msgs.msg import Bool
 from nav_msgs.msg import Odometry
 import numpy as np
 import rclpy
@@ -323,6 +325,23 @@ def auto_prefilter_m(declared_noise_m: float) -> float:
     if declared_noise_m is None or declared_noise_m < 0:
         return 0.0
     return 1.0 if declared_noise_m < 0.008 else 2.0
+
+
+def localization_confidence_low(recent_margins, metres_since_fix: float,
+                                margin_min: float = 2.6, gap_max_m: float = 15.0) -> bool:
+    """Is the rover's position too weakly evidenced to claim arrival on?
+
+    Low when the matcher's recent accepted fixes were barely unambiguous (median
+    margin of the last few below margin_min) AND no fix has been accepted for
+    gap_max_m of travel - or when there has been no fix at all. Measured on the 97
+    development and confirmation runs that ended in a PASS or a false arrival, the
+    EKF's own covariance did not separate them at all (1.7-2.2 m either way); this
+    did: margin < 2.6 with a > 15 m gap flagged 8 of 13 false arrivals and 7 of 84
+    good arrivals (PROGRESS.md, "Arrival confidence").
+    """
+    if not len(recent_margins):
+        return True
+    return float(np.median(recent_margins)) < margin_min and metres_since_fix > gap_max_m
 
 
 class Sample(NamedTuple):
@@ -623,6 +642,11 @@ class TerrainRelativeNode(Node):
         self._last_report_m = -1e9
 
         self._pub = self.create_publisher(PoseWithCovarianceStamped, "/absolute_reference/pose", 10)
+        # Arrival confidence for the path follower - see localization_confidence_low.
+        self.declare_parameter("confidence_margin_min", 2.6)
+        self.declare_parameter("confidence_gap_max_m", 15.0)
+        self._accepted_margins = deque(maxlen=5)
+        self._confidence_pub = self.create_publisher(Bool, "/localization/confidence_low", 10)
         self.create_subscription(Imu, "/imu", self._on_imu, 20)
         self.create_subscription(Odometry, "/odom", self._on_odom, 20)
         self.create_subscription(Odometry, "/odometry/filtered", self._on_estimate, 20)
@@ -749,6 +773,8 @@ class TerrainRelativeNode(Node):
         measurement over and over - which is the point. It is an anchor, and its
         correlation is paid for in `position_variance` above.
         """
+        if self._last_stamp is not None:
+            self._publish_confidence()
         if self._last_stamp is None or self._track is None:
             return
         if len(self._samples) < self._min_samples:
@@ -894,6 +920,7 @@ class TerrainRelativeNode(Node):
         # Correct this node's own track. Nothing here consults the filter.
         self._track = (self._track[0] + dx, self._track[1] + dy)
         self._last_corrected_at_m = self._travelled_m
+        self._accepted_margins.append(margin)
         self._corrections_applied += 1
         self._publish_track()
         # Summarise rather than log every publish: at 1 Hz the per-fix line would
@@ -907,6 +934,25 @@ class TerrainRelativeNode(Node):
                 f"poses published (rejected so far: {self._fixes_rejected_margin} "
                 f"ambiguous, {self._fixes_rejected_consistency} inconsistent)"
             )
+
+    def _publish_confidence(self) -> None:
+        gap = (self._travelled_m - self._last_corrected_at_m
+               if self._last_corrected_at_m is not None else float("inf"))
+        low = localization_confidence_low(
+            list(self._accepted_margins), gap,
+            float(self.get_parameter("confidence_margin_min").value),
+            float(self.get_parameter("confidence_gap_max_m").value))
+        self._confidence_pub.publish(Bool(data=bool(low)))
+        if low != getattr(self, "_confidence_was_low", None):
+            # Every transition, with the evidence behind it, so the thresholds can
+            # be recalibrated from what the node actually saw rather than from the
+            # sparser correction summaries in this log.
+            self._confidence_was_low = low
+            med = float(np.median(self._accepted_margins)) if self._accepted_margins else float("nan")
+            self.get_logger().info(
+                f"Localisation confidence {'LOW' if low else 'ok'} at {self._travelled_m:.1f} m "
+                f"travelled: median margin of last {len(self._accepted_margins)} fixes {med:.2f}, "
+                f"{gap:.1f} m since the last accepted fix")
 
     def _publish_track(self) -> None:
         """Publish the node's current absolute position estimate.
